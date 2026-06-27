@@ -1,0 +1,8 @@
+﻿python-dotenv
+psycopg2-binary
+pandas
+openpyxl
+geopandas
+sqlalchemy
+geoalchemy2
+matplotlib
