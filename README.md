@@ -1,4 +1,4 @@
-﻿# EA2S SIG
+# EA2S SIG
 
 MVP de diagnostico territorial ambiental da EA2S, organizado para automatizar analises em PostgreSQL/PostGIS com scripts SQL, Python e documentacao versionada.
 
@@ -156,3 +156,52 @@ A pasta `EA2S_SIG` contem o sistema, scripts e base comum. Os produtos finais de
 ```text
 <projeto-sig-dir>\resultados_mvp\execucao_<execucao_id>\
 ```
+
+## Como exportar GeoPackage do MVP
+
+O MVP possui um exportador espacial para gerar um unico GeoPackage com camadas organizadas para leitura no QGIS. A saida deve ficar dentro da pasta SIG especifica do projeto, nao dentro da base comum `EA2S_SIG`.
+
+Exemplo:
+
+```powershell
+python src\exportar_gpkg_mvp.py --execucao-id 6 --projeto-id 1 --area-interesse-id 1 --projeto-sig-dir "C:\Users\Usuario\OneDrive\EA2S\Projetos\2025\Ataide_Ingleses\SIG" --overwrite
+```
+
+A saida sera criada em:
+
+```text
+<projeto-sig-dir>\resultados_mvp\execucao_<execucao_id>\gpkg\ea2s_sig_execucao_<execucao_id>.gpkg
+```
+
+A area de interesse nao e duplicada por padrao, pois e o poligono original de entrada do projeto. As camadas de referencia espacial exportadas sao:
+
+- `buffer_1000m`
+- `microbacias_interceptadas`
+- `setores_censitarios_intersectados`
+- `setores_censitarios_area_intersectada`
+
+A camada `setores_censitarios_intersectados` usa o limite completo dos setores censitarios a partir de `urbano.setores_censo_2022_malha_br` e agrega atributos socioeconomicos de `resultados.vw_relatorio_socio_contexto_setores`. A camada `setores_censitarios_area_intersectada` mantem a geometria da intersecao com a area de interesse para auditoria espacial.
+
+As camadas ambientais sao separadas por unidade de analise e tema:
+
+- area de interesse: `area_interesse_geologia`, `area_interesse_geomorfologia`, `area_interesse_hidrogeologia`, `area_interesse_pedologia`, `area_interesse_vegetacao`
+- buffer de 1000 m: `buffer_1000m_geologia`, `buffer_1000m_geomorfologia`, `buffer_1000m_hidrogeologia`, `buffer_1000m_pedologia`, `buffer_1000m_vegetacao`
+- microbacias: `microbacias_geologia`, `microbacias_geomorfologia`, `microbacias_hidrogeologia`, `microbacias_pedologia`, `microbacias_vegetacao`
+
+Cada camada ambiental contem area, percentual e atributos originais da camada oficial usados na intersecao. O campo `valor_principal` continua sendo a referencia principal para agrupamento e calculo de area. Os demais atributos originais servem para diagnostico tecnico, auditoria e geracao automatica de texto.
+
+O exportador expande as chaves de `atributos_origem` em colunas do GeoPackage com nomes sanitizados, sem acentos, espacos ou caracteres especiais. A coluna `atributos_origem_json` tambem e exportada para preservar o JSON completo da feicao oficial.
+
+Para que esses atributos estejam disponiveis, o SQL atualizado de `sql/05_intersecoes_fisico_biotico.sql` precisa ser reaplicado no banco com autorizacao explicita e uma nova execucao do MVP precisa gravar os campos `fonte_schema`, `fonte_tabela`, `fonte_camada` e `atributos_origem` em `resultados.intersecao_fisico_biotica`.
+
+Para auditoria, e possivel incluir uma camada unica com todas as intersecoes fisico-bioticas:
+
+```powershell
+python src\exportar_gpkg_mvp.py --execucao-id 6 --projeto-id 1 --area-interesse-id 1 --projeto-sig-dir "C:\Users\Usuario\OneDrive\EA2S\Projetos\2025\Ataide_Ingleses\SIG" --overwrite --incluir-auditoria
+```
+
+Nesse caso, tambem sera exportada a camada `auditoria_fb_intersecoes_todas`.
+
+O exportador usa `ogr2ogr`/GDAL para exportar consultas `SELECT` do PostGIS para GeoPackage. Se `ogr2ogr` nao estiver disponivel no `PATH`, execute pelo ambiente do QGIS/OSGeo4W ou configure o GDAL/OGR no Windows.
+
+Arquivos `.lyr` nao sao convertidos automaticamente nesta versao. Eles podem ser guardados como referencia de simbologia do ArcGIS, mas a aplicacao de estilos no QGIS deve ser feita posteriormente, preferencialmente com arquivos `.qml` ou `.sld`.

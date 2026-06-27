@@ -20,6 +20,7 @@ Regras metodologicas:
 - usar ST_MakeValid, ST_CollectionExtract(..., 3) e ST_Multi para garantir saida MultiPolygon;
 - calcular area em m2, hectares e percentual da unidade de analise;
 - guardar atributos complementares em jsonb;
+- preservar atributos originais da feicao oficial em atributos_origem jsonb, sem geometria;
 - unidades previstas: area_interesse, buffer_1000m, microbacia;
 - buffer_1000m representa o buffer completo de 1000 m ao redor da area, incluindo a propria area;
 - entorno_1000m, excluindo a area de interesse, pode ser avaliado como melhoria futura;
@@ -48,10 +49,14 @@ CREATE TABLE IF NOT EXISTS resultados.intersecao_fisico_biotica (
     unidade_analise_nome text,
     tema text NOT NULL,
     camada_origem text NOT NULL,
+    fonte_schema text,
+    fonte_tabela text,
+    fonte_camada text,
     feicao_origem_id text,
     campo_principal text,
     valor_principal text,
     atributos_complementares jsonb,
+    atributos_origem jsonb,
     area_intersecao_m2 numeric,
     area_intersecao_ha numeric,
     area_unidade_analise_m2 numeric,
@@ -73,7 +78,11 @@ CREATE TABLE IF NOT EXISTS resultados.intersecao_fisico_biotica (
 ALTER TABLE resultados.intersecao_fisico_biotica
     ADD COLUMN IF NOT EXISTS unidade_analise_codigo text,
     ADD COLUMN IF NOT EXISTS unidade_analise_nome text,
-    ADD COLUMN IF NOT EXISTS feicao_origem_id text;
+    ADD COLUMN IF NOT EXISTS feicao_origem_id text,
+    ADD COLUMN IF NOT EXISTS fonte_schema text,
+    ADD COLUMN IF NOT EXISTS fonte_tabela text,
+    ADD COLUMN IF NOT EXISTS fonte_camada text,
+    ADD COLUMN IF NOT EXISTS atributos_origem jsonb;
 
 ALTER TABLE resultados.intersecao_fisico_biotica
     ALTER COLUMN execucao_id SET NOT NULL;
@@ -255,6 +264,9 @@ BEGIN
             ua.unidade_analise_nome,
             'geologia'::text AS tema,
             'geologia.geologia_br_bdia_2025'::text AS camada_origem,
+            'geologia'::text AS fonte_schema,
+            'geologia_br_bdia_2025'::text AS fonte_tabela,
+            'geologia'::text AS fonte_camada,
             geo.id::text AS feicao_origem_id,
             'nm_unidade'::text AS campo_principal,
             geo.nm_unidade::text AS valor_principal,
@@ -268,6 +280,7 @@ BEGIN
                 'nm_provinc', geo.nm_provinc,
                 'nm_sub_pro', geo.nm_sub_pro
             ) || jsonb_build_object('unidade_analise', ua.atributos_unidade) AS atributos_complementares,
+            to_jsonb(geo) - 'geom' - 'geometry' AS atributos_origem,
             ua.geom_31982 AS geom_unidade,
             ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_Transform(geo.geom, 31982)), 3))::geometry(MultiPolygon, 31982) AS geom_camada
         FROM unidades_analise AS ua
@@ -283,6 +296,9 @@ BEGIN
             ua.unidade_analise_nome,
             'geomorfologia'::text AS tema,
             'geomorfologia.geomorfo_br_bdia_2025'::text AS camada_origem,
+            'geomorfologia'::text AS fonte_schema,
+            'geomorfo_br_bdia_2025'::text AS fonte_tabela,
+            'geomorfologia'::text AS fonte_camada,
             geomorfo.id::text AS feicao_origem_id,
             'legenda'::text AS campo_principal,
             geomorfo.legenda::text AS valor_principal,
@@ -298,6 +314,7 @@ BEGIN
                 'niv_alt', geomorfo.niv_alt,
                 'compartime', geomorfo.compartime
             ) || jsonb_build_object('unidade_analise', ua.atributos_unidade) AS atributos_complementares,
+            to_jsonb(geomorfo) - 'geom' - 'geometry' AS atributos_origem,
             ua.geom_31982 AS geom_unidade,
             ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_Transform(geomorfo.geom, 31982)), 3))::geometry(MultiPolygon, 31982) AS geom_camada
         FROM unidades_analise AS ua
@@ -313,6 +330,9 @@ BEGIN
             ua.unidade_analise_nome,
             'hidrogeologia'::text AS tema,
             'hidrogeologia.hidrogeologico_sul_bdia_2025'::text AS camada_origem,
+            'hidrogeologia'::text AS fonte_schema,
+            'hidrogeologico_sul_bdia_2025'::text AS fonte_tabela,
+            'hidrogeologia'::text AS fonte_camada,
             hidro.id::text AS feicao_origem_id,
             'nome_unida'::text AS campo_principal,
             hidro.nome_unida::text AS valor_principal,
@@ -327,6 +347,7 @@ BEGIN
                 'vze_int_cl', hidro.vze_int_cl,
                 'domínio_da', hidro."domínio_da"
             ) || jsonb_build_object('unidade_analise', ua.atributos_unidade) AS atributos_complementares,
+            to_jsonb(hidro) - 'geom' - 'geometry' AS atributos_origem,
             ua.geom_31982 AS geom_unidade,
             ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_Transform(hidro.geom, 31982)), 3))::geometry(MultiPolygon, 31982) AS geom_camada
         FROM unidades_analise AS ua
@@ -342,12 +363,16 @@ BEGIN
             ua.unidade_analise_nome,
             'pedologia'::text AS tema,
             'pedologia.pedo_ordem_ibge_br'::text AS camada_origem,
+            'pedologia'::text AS fonte_schema,
+            'pedo_ordem_ibge_br'::text AS fonte_tabela,
+            'pedologia'::text AS fonte_camada,
             pedo.id::text AS feicao_origem_id,
             'legenda'::text AS campo_principal,
             pedo.legenda::text AS valor_principal,
             jsonb_build_object(
                 'area_km', pedo.area_km
             ) || jsonb_build_object('unidade_analise', ua.atributos_unidade) AS atributos_complementares,
+            to_jsonb(pedo) - 'geom' - 'geometry' AS atributos_origem,
             ua.geom_31982 AS geom_unidade,
             ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_Transform(pedo.geom, 31982)), 3))::geometry(MultiPolygon, 31982) AS geom_camada
         FROM unidades_analise AS ua
@@ -363,6 +388,9 @@ BEGIN
             ua.unidade_analise_nome,
             'vegetacao'::text AS tema,
             'vegetacao.vegetacao_br_bdia_2025'::text AS camada_origem,
+            'vegetacao'::text AS fonte_schema,
+            'vegetacao_br_bdia_2025'::text AS fonte_tabela,
+            'vegetacao'::text AS fonte_camada,
             veg.id::text AS feicao_origem_id,
             'legenda'::text AS campo_principal,
             veg.legenda::text AS valor_principal,
@@ -377,6 +405,7 @@ BEGIN
                 'legenda_1', veg.legenda_1,
                 'legenda_2', veg.legenda_2
             ) || jsonb_build_object('unidade_analise', ua.atributos_unidade) AS atributos_complementares,
+            to_jsonb(veg) - 'geom' - 'geometry' AS atributos_origem,
             ua.geom_31982 AS geom_unidade,
             ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_Transform(veg.geom, 31982)), 3))::geometry(MultiPolygon, 31982) AS geom_camada
         FROM unidades_analise AS ua
@@ -391,10 +420,14 @@ BEGIN
             camada.unidade_analise_nome,
             camada.tema,
             camada.camada_origem,
+            camada.fonte_schema,
+            camada.fonte_tabela,
+            camada.fonte_camada,
             camada.feicao_origem_id,
             camada.campo_principal,
             camada.valor_principal,
             camada.atributos_complementares,
+            camada.atributos_origem,
             ST_Multi(ST_CollectionExtract(ST_MakeValid(ST_Intersection(camada.geom_unidade, camada.geom_camada)), 3))::geometry(MultiPolygon, 31982) AS geom,
             ST_Area(camada.geom_unidade) AS area_unidade_analise_m2
         FROM camadas AS camada
@@ -406,10 +439,14 @@ BEGIN
             inter.unidade_analise_nome,
             inter.tema,
             inter.camada_origem,
+            inter.fonte_schema,
+            inter.fonte_tabela,
+            inter.fonte_camada,
             inter.feicao_origem_id,
             inter.campo_principal,
             inter.valor_principal,
             inter.atributos_complementares,
+            inter.atributos_origem,
             round(ST_Area(inter.geom)::numeric, 4) AS area_intersecao_m2,
             round((ST_Area(inter.geom) / 10000.0)::numeric, 6) AS area_intersecao_ha,
             round(inter.area_unidade_analise_m2::numeric, 4) AS area_unidade_analise_m2,
@@ -440,10 +477,14 @@ BEGIN
         unidade_analise_nome,
         tema,
         camada_origem,
+        fonte_schema,
+        fonte_tabela,
+        fonte_camada,
         feicao_origem_id,
         campo_principal,
         valor_principal,
         atributos_complementares,
+        atributos_origem,
         area_intersecao_m2,
         area_intersecao_ha,
         area_unidade_analise_m2,
@@ -459,10 +500,14 @@ BEGIN
         iv.unidade_analise_nome,
         iv.tema,
         iv.camada_origem,
+        iv.fonte_schema,
+        iv.fonte_tabela,
+        iv.fonte_camada,
         iv.feicao_origem_id,
         iv.campo_principal,
         iv.valor_principal,
         iv.atributos_complementares,
+        iv.atributos_origem,
         iv.area_intersecao_m2,
         iv.area_intersecao_ha,
         iv.area_unidade_analise_m2,
@@ -534,8 +579,3 @@ $$;
 
 -- Exemplo futuro, somente apos revisao e autorizacao:
 -- SELECT * FROM resultados.processar_intersecoes_fisico_bioticas_mvp(4, 1, 1);
-
-
-
-
-

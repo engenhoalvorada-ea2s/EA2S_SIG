@@ -1,4 +1,4 @@
-﻿# Pendencias de alinhamento com o banco real
+# Pendencias de alinhamento com o banco real
 
 Data: 2026-06-22
 
@@ -105,8 +105,8 @@ Resultados confirmados:
 
 ## Pendencias futuras pos-v0.1
 
-- exportacao espacial para GeoPackage;
-- geracao automatica de mapas;
+- testar novamente o exportador espacial `src/exportar_gpkg_mvp.py` apos reaplicar o SQL 05 atualizado, rodar nova execucao do MVP e gerar GPKG enriquecido com atributos originais;
+- gerar projeto QGIS `.qgz` com grupos de camadas e simbologia;
 - geracao automatica de relatorio DOCX;
 - melhoria estetica dos graficos;
 - automacao integrada em comando unico para processar, exportar e gerar graficos.
@@ -134,3 +134,49 @@ Hidrogeologia nao deve ser confundida com hidrologia superficial. Cursos d'agua 
 
 
 
+
+## Exportacao GeoPackage do MVP
+
+O script `src/exportar_gpkg_mvp.py` foi criado localmente para exportar camadas espaciais do MVP para um arquivo GeoPackage em:
+
+```text
+<projeto-sig-dir>\resultados_mvp\execucao_<execucao_id>\gpkg\ea2s_sig_execucao_<execucao_id>.gpkg
+```
+
+A primeira exportacao GeoPackage funcionou e gerou arquivo `.gpkg`. A pendencia foi resolvida parcialmente: o exportador existe e ja produziu saida, mas a organizacao das camadas foi revisada para melhorar a leitura no QGIS.
+
+Melhoria implementada localmente em `src/exportar_gpkg_mvp.py`:
+
+- a camada `area_interesse` deixou de ser exportada por padrao, pois a area de interesse e o poligono original de entrada do projeto;
+- foram mantidas as camadas de referencia `buffer_1000m`, `microbacias_interceptadas` e `setores_censitarios_intersectados`;
+- a camada socioeconomica `setores_censitarios_intersectados` passa a buscar o limite completo dos setores na malha oficial e atributos em `resultados.vw_relatorio_socio_contexto_setores`;
+- as intersecoes fisico-bioticas passam a ser exportadas em camadas separadas por unidade de analise e tema;
+- a camada unica `auditoria_fb_intersecoes_todas` fica disponivel apenas com o argumento opcional `--incluir-auditoria`.
+
+Camadas previstas para nova conferencia:
+
+- `buffer_1000m`;
+- `microbacias_interceptadas`;
+- `setores_censitarios_intersectados`;
+- `setores_censitarios_area_intersectada`;
+- camadas ambientais por tema para `area_interesse`, `buffer_1000m` e `microbacias`.
+
+Pendencia futura: gerar projeto QGIS `.qgz` com grupos de camadas, ordem de desenho e simbologia padronizada.
+## Atributos originais nas intersecoes fisico-bioticas
+
+Melhoria planejada e implementada localmente nos arquivos:
+
+- `sql/05_intersecoes_fisico_biotico.sql`;
+- `src/exportar_gpkg_mvp.py`;
+- `README.md`.
+
+O script 05 passa a propor os campos `fonte_schema`, `fonte_tabela`, `fonte_camada` e `atributos_origem` em `resultados.intersecao_fisico_biotica`. A funcao de processamento passa a preencher `atributos_origem` com `to_jsonb(...) - 'geom' - 'geometry'`, preservando os atributos originais das feicoes oficiais de geologia, geomorfologia, hidrogeologia, pedologia e vegetacao sem alterar as bases oficiais.
+
+O exportador GeoPackage passa a descobrir as chaves de `atributos_origem` por unidade de analise e tema, sanitizar nomes de colunas e exportar esses atributos junto com area, percentual, `valor_principal` e `atributos_origem_json`.
+
+Pendencias operacionais:
+
+1. Reaplicar o SQL atualizado de `sql/05_intersecoes_fisico_biotico.sql` no banco, somente com autorizacao explicita.
+2. Rodar nova execucao do MVP para gravar os novos campos em `resultados.intersecao_fisico_biotica`.
+3. Exportar novo GeoPackage a partir da nova execucao.
+4. Conferir no QGIS se as camadas ambientais contem os atributos originais esperados e o campo `atributos_origem_json`.
