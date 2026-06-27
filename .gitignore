@@ -1,14 +1,23 @@
-﻿.env
+﻿# Ambiente e variáveis locais
+.env
 .venv/
+
+# Cache Python
 __pycache__/
 *.pyc
 
+# Saídas do sistema
 outputs/*
 !outputs/.gitkeep
 
+# Resultados gerados fora da base comum
+resultados_mvp/
+
+# Dados locais/oficiais pesados
 data/*
 !data/.gitkeep
 
+# Arquivos SIG e geoprocessamento
 *.gpkg
 *.shp
 *.dbf
@@ -18,8 +27,9 @@ data/*
 *.qgz
 *.qgs
 
+# Logs
+*.log
+
+# Sistema operacional
 .DS_Store
 Thumbs.db
-outputs/
-resultados_mvp/
-*.log
