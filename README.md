@@ -50,6 +50,28 @@ O teste executa apenas uma consulta de leitura:
 SELECT current_database(), current_user, inet_server_port();
 ```
 
+## Interface Streamlit
+
+A primeira versão da interface Streamlit fica em `src/app_streamlit.py`. Ela funciona como camada amigável para leitura, seleção e montagem de comandos do MVP, sem substituir o banco PostGIS nem os scripts existentes.
+
+Para iniciar a interface manualmente:
+
+```powershell
+streamlit run src\app_streamlit.py
+```
+
+Nesta versão, a interface:
+
+- seleciona projeto e área de interesse existentes;
+- mantém `projeto_id`, `area_interesse_id`, `projeto_sig_dir` e parâmetros do diagnóstico em `st.session_state`;
+- configura temas ambientais, socioeconomia, unidades espaciais e buffer;
+- lista execuções recentes do projeto/área para exportação e consulta de resultados;
+- monta comandos PowerShell para processamento, exportação de planilhas, gráficos e GPKG;
+- adiciona `--incluir-hidrografia` quando Hidrografia ANA estiver marcada;
+- consulta resultados existentes com `SELECT` e mostra tabelas com `st.dataframe`.
+
+A interface inicial ainda não executa scripts automaticamente. A execução direta por botão será uma etapa futura, com controles adicionais de segurança. A exportação GPKG depende do `ogr2ogr` e do ambiente QGIS/GDAL configurado no PowerShell. A interface também ainda não cadastra projetos, não importa novas bases espaciais e não substitui os scripts de processamento.
+
 ## Fluxo geral do MVP
 
 1. Cadastrar projeto.
@@ -76,7 +98,8 @@ Neste projeto, comandos destrutivos no banco dependem de autorizacao explicita. 
 8. `sql/07_tabelas_tecnicas_fisico_biotico.sql`: views tecnicas fisico-bioticas.
 9. `sql/08_tabelas_tecnicas_socioeconomico.sql`: views tecnicas socioeconomicas.
 10. `sql/09_consultas_relatorio_integrado.sql`: views integradas para relatorio tecnico.
-11. `sql/99_consultas_conferencia.sql`: consultas finais de leitura.
+11. `sql/10_hidrografia_ana.sql`: modulo opcional de hidrografia ANA linear.
+12. `sql/99_consultas_conferencia.sql`: consultas finais de leitura.
 
 ## Como executar o MVP
 
@@ -202,6 +225,38 @@ python src\exportar_gpkg_mvp.py --execucao-id 6 --projeto-id 1 --area-interesse-
 
 Nesse caso, tambem sera exportada a camada `auditoria_fb_intersecoes_todas`.
 
+Quando `--incluir-hidrografia` for informado, tambem sao exportadas as camadas lineares `hidrografia_area_interesse`, `hidrografia_buffer_1000m` e `hidrografia_microbacias`.
+
 O exportador usa `ogr2ogr`/GDAL para exportar consultas `SELECT` do PostGIS para GeoPackage. Se `ogr2ogr` nao estiver disponivel no `PATH`, execute pelo ambiente do QGIS/OSGeo4W ou configure o GDAL/OGR no Windows.
 
 Arquivos `.lyr` nao sao convertidos automaticamente nesta versao. Eles podem ser guardados como referencia de simbologia do ArcGIS, mas a aplicacao de estilos no QGIS deve ser feita posteriormente, preferencialmente com arquivos `.qml` ou `.sld`.
+
+## Processamento de hidrografia ANA
+
+A hidrografia ANA e tratada no MVP como camada linear, separada das intersecoes fisico-bioticas poligonais. A metrica principal e comprimento, em metros e quilometros, nao area.
+
+A base ANA principal identificada para esta versao e `hidrografia."bh6_curso_dagua_ANA_2022"`; por conter letras maiusculas no nome, ela deve ser escrita com aspas duplas quando referenciada diretamente em SQL. A tabela de microbacias usada como unidade de analise continua sendo `hidrografia.microbacias_sigeo_sirhesc_aguassc`.
+
+A hidrografia ANA esta em SRID 4674 e possui geometria `MULTILINESTRING` no campo `geom`. As microbacias estao em SRID 29192 e possuem geometria `MULTIPOLYGON` no campo `geom`. O processamento transforma todas as geometrias para EPSG:31982 antes de recortar e calcular comprimento.
+
+A tabela ANA nao possui campo explicito de nome do rio ou curso d'agua. Por isso, `nome_curso` permanece nulo nesta versao e nao deve ser preenchido com codigo. Os principais identificadores usados sao `idcda`, `cocursodag`, `nuordemcda` e `nunivotcda`; os campos `fid`, `wtc_pk`, `cocdadesag`, `dedominial`, `dsversao` e `nucompcda` tambem sao preservados nas saidas tecnicas.
+
+Os atributos originais da ANA sao preservados em `atributos_origem` com `to_jsonb(h) - 'geom' - 'geometry'`. As camadas exportadas ficam em SRID 31982 e usam geometria linear recortada.
+
+O processamento e opcional nesta fase. Exemplo:
+
+```powershell
+python src\executar_mvp.py --projeto-id 1 --area-interesse-id 1 --usuario Paulo --incluir-hidrografia
+```
+
+Para exportar a hidrografia no GeoPackage:
+
+```powershell
+python src\exportar_gpkg_mvp.py --execucao-id 7 --projeto-id 1 --area-interesse-id 1 --projeto-sig-dir "C:\Users\Usuario\OneDrive\EA2S\Projetos\2025\Ataide_Ingleses\SIG" --overwrite --incluir-hidrografia
+```
+
+Camadas lineares previstas:
+
+- `hidrografia_area_interesse`
+- `hidrografia_buffer_1000m`
+- `hidrografia_microbacias`

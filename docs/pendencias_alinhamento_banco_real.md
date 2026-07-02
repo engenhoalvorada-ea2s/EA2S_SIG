@@ -32,6 +32,9 @@ A estrutura real do banco `ea2s_sig` foi incorporada aos scripts revisados:
   - `pedologia.pedo_ordem_ibge_br`, SRID 4674;
   - `vegetacao.vegetacao_br_bdia_2025`, SRID 4674;
   - `hidrografia.microbacias_sigeo_sirhesc_aguassc`, SRID 29192.
+- Camadas de hidrografia ANA identificadas:
+  - `hidrografia."bh6_curso_dagua_ANA_2022"`, tabela principal linear da ANA, SRID 4674, MULTILINESTRING, campo geometrico `geom`;
+  - `hidrografia.microbacias_sigeo_sirhesc_aguassc`, tabela de microbacias, SRID 29192, MULTIPOLYGON, campo geometrico `geom`.
 
 ## Validacao dos indicadores cadastrados
 
@@ -58,6 +61,7 @@ Esses indicadores devem permanecer inativos por enquanto, pois variancia nao dev
 - `sql/07_tabelas_tecnicas_fisico_biotico.sql`: criado localmente como proposta de views tecnicas fisico-bioticas; ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
 - `sql/08_tabelas_tecnicas_socioeconomico.sql`: criado localmente como proposta de views tecnicas socioeconomicas; ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
 - `sql/09_consultas_relatorio_integrado.sql`: criado localmente como proposta de views integradas de relatorio; ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
+- `sql/10_hidrografia_ana.sql`: criado localmente como proposta do modulo de hidrografia ANA; usa a tabela real `hidrografia."bh6_curso_dagua_ANA_2022"` e os campos reais identificados, mas ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
 
 ## Conferencia final das chaves setoriais
 
@@ -180,3 +184,57 @@ Pendencias operacionais:
 2. Rodar nova execucao do MVP para gravar os novos campos em `resultados.intersecao_fisico_biotica`.
 3. Exportar novo GeoPackage a partir da nova execucao.
 4. Conferir no QGIS se as camadas ambientais contem os atributos originais esperados e o campo `atributos_origem_json`.
+
+## Modulo de hidrografia ANA
+
+Foi criado localmente o primeiro modulo de hidrografia ANA do MVP EA2S SIG:
+
+- `sql/10_hidrografia_ana.sql`;
+- ajuste opcional em `src/executar_mvp.py` com `--incluir-hidrografia`;
+- ajuste opcional em `src/exportar_gpkg_mvp.py` com `--incluir-hidrografia`;
+- documentacao no `README.md`.
+
+A hidrografia foi mantida separada de `resultados.intersecao_fisico_biotica`, pois a metrica principal e comprimento linear, nao area. A tabela proposta e `resultados.intersecao_hidrografia`, com geometria `MultiLineString` em EPSG:31982 e atributos originais preservados em `atributos_origem`.
+
+Tabelas e campos reais identificados para o modulo:
+
+- `hidrografia."bh6_curso_dagua_ANA_2022"`: tabela principal linear da ANA, SRID 4674, MULTILINESTRING, `geom`;
+- campos ANA existentes: `id`, `geom`, `fid`, `wtc_pk`, `idcda`, `cocursodag`, `nudistbacc`, `nucompcda`, `nuareabacc`, `cocdadesag`, `nunivotcda`, `nuordemcda`, `dedominial`, `dsversao`;
+- `hidrografia.microbacias_sigeo_sirhesc_aguassc`: tabela de microbacias, SRID 29192, MULTIPOLYGON, `geom`;
+- campos de microbacias existentes: `id`, `geom`, `cd_micro`, `nm_micro`, `nm_rio_pri`, `cd_otto_1`, `cd_otto_2`, `cd_otto_3`, `cd_otto_4`, `cd_otto_5`, `cd_otto_6`, `cd_otto_7`, `cd_bacia`, `cd_ibge_mu`, `cd_trecho`, `sg_tipo`, `cd_qmin7`, `vl_qmin7`, `nm_qmin7`, `vl_qrest`, `vl_qsubt`, `shape_area`, `shape_len`.
+
+A tabela ANA nao possui campo explicito de nome do rio ou curso d'agua. Portanto, `nome_curso` permanece nulo nesta versao. Os campos `codigo_trecho` e `codigo_curso` usam, respectivamente, `idcda` e `cocursodag`.
+
+Pendencias operacionais:
+
+1. Aplicar `sql/10_hidrografia_ana.sql` no banco somente com autorizacao explicita.
+2. Rodar nova execucao com `--incluir-hidrografia`.
+3. Validar as views `resultados.vw_hidrografia_area_interesse`, `resultados.vw_hidrografia_buffer_1000m`, `resultados.vw_hidrografia_microbacias` e `resultados.vw_hidrografia_resumo`.
+4. Exportar novo GeoPackage com `--incluir-hidrografia`.
+5. Validar no GPKG as camadas `hidrografia_area_interesse`, `hidrografia_buffer_1000m` e `hidrografia_microbacias`.
+
+## Interface Streamlit inicial
+
+Foi criada e ajustada localmente a primeira versão da interface Streamlit do MVP EA2S SIG em `src/app_streamlit.py`.
+
+Melhorias de usabilidade aplicadas:
+
+- seleção de projeto e área gravada em `st.session_state`;
+- preenchimento automático de projeto e área na página de execução;
+- usuário padrão `Paulo`;
+- seleção amigável de execuções recentes por projeto/área;
+- persistência local de `projeto_sig_dir` para comandos de exportação;
+- parâmetros do diagnóstico consolidados em `st.session_state["parametros_diagnostico"]`;
+- comandos PowerShell montados sem execução automática;
+- avisos específicos para exportações e para ambiente QGIS/GDAL no GPKG.
+
+Pendências futuras da interface:
+
+1. Integrar execução segura via botão, com confirmação explícita, logs e tratamento de erros.
+2. Persistir `pasta_sig` no cadastro do projeto, evitando digitação manual recorrente.
+3. Implementar diagnóstico seletivo real por camada, além da montagem de parâmetros na interface.
+4. Criar cadastro de projetos via formulário.
+5. Criar cadastro de áreas e camadas de análise.
+6. Implementar upload/importação de camadas, possivelmente com GeoPandas.
+7. Implementar visualização cartográfica interativa.
+8. Validar a interface em ambiente local com Streamlit após autorização para execução do app.
