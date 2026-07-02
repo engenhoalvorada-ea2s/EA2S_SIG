@@ -57,7 +57,7 @@ A primeira versão da interface Streamlit fica em `src/app_streamlit.py`. Ela fu
 Para iniciar a interface manualmente:
 
 ```powershell
-streamlit run src\app_streamlit.py
+python -m streamlit run src\app_streamlit.py
 ```
 
 Nesta versão, a interface:
@@ -72,6 +72,45 @@ Nesta versão, a interface:
 
 A interface inicial ainda não executa scripts automaticamente. A execução direta por botão será uma etapa futura, com controles adicionais de segurança. A exportação GPKG depende do `ogr2ogr` e do ambiente QGIS/GDAL configurado no PowerShell. A interface também ainda não cadastra projetos, não importa novas bases espaciais e não substitui os scripts de processamento.
 
+## Mapa na interface Streamlit
+
+A interface possui uma página `Mapa` para visualização cartográfica rápida das camadas principais do projeto e da execução com Folium/Leaflet.
+
+Dependências específicas:
+
+```powershell
+python -m pip install folium streamlit-folium
+```
+
+Como rodar a interface:
+
+```powershell
+python -m streamlit run src\app_streamlit.py
+```
+
+O mapa é uma visualização operacional inicial. As geometrias são transformadas para EPSG:4326 apenas para exibição no Folium; o processamento oficial continua no PostGIS, com cálculos em SRID operacional. Mapas finais técnicos, simbologia e conferência cartográfica detalhada ainda devem ser feitos no QGIS.
+
+Camadas previstas na página `Mapa`:
+
+- área de interesse;
+- buffer configurável, por padrão 1000 m;
+- microbacias interceptadas;
+- setores censitários da execução;
+- hidrografia ANA da execução, quando processada.
+## Resumo estatístico no Streamlit
+
+A interface possui uma página `Resumo estatístico` para consultar estatísticas consolidadas da execução selecionada.
+
+A página permite:
+
+- selecionar execução, projeto e área de interesse;
+- escolher o limite de análise: área de interesse, buffer de 1000 m, microbacias interceptadas ou setores censitários intersectados;
+- consultar estatísticas físico-bióticas por tema, classe dominante, área e percentual;
+- consultar indicadores socioeconômicos dos setores censitários intersectados;
+- consultar estatísticas de hidrografia, quando a execução tiver esse módulo processado;
+- visualizar gráficos interativos simples com Plotly.
+
+A pirâmide etária e a estrutura por sexo dependem de dados específicos disponíveis e validados no banco. Quando essas fontes não estiverem mapeadas com segurança, a interface mostra aviso e não inventa valores.
 ## Fluxo geral do MVP
 
 1. Cadastrar projeto.

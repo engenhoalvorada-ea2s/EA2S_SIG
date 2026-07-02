@@ -8,9 +8,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+import json
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
+
+try:
+    import folium
+    from streamlit_folium import st_folium
+except ImportError:  # pragma: no cover - exibido na interface quando faltar dependencia
+    folium = None
+    st_folium = None
 
 from db import get_connection
 
@@ -22,6 +31,8 @@ PAGE_OPTIONS = (
     "Configurar diagnóstico",
     "Executar processamento",
     "Resultados",
+    "Mapa",
+    "Resumo estatístico",
 )
 
 ANALISES_AMBIENTAIS = (
@@ -444,6 +455,675 @@ def exibir_resultado_query(titulo: str, result: QueryResult, vazio: str | None =
     st.dataframe(result.data, use_container_width=True)
 
 
+def normalizar_geojson(valor: Any) -> dict[str, Any] | None:
+    if valor is None:
+        return None
+    if isinstance(valor, dict):
+        return valor
+    if isinstance(valor, str):
+        try:
+            return json.loads(valor)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def executar_geojson_select(
+    conn: Any,
+    sql: str,
+    params: tuple[Any, ...],
+) -> dict[str, Any] | None:
+    try:
+        data = pd.read_sql_query(sql, conn, params=params)
+    except Exception:
+        return None
+    if data.empty or "geojson" not in data.columns:
+        return None
+    return normalizar_geojson(data.iloc[0]["geojson"])
+
+
+def carregar_geojson_area_interesse(
+    conn: Any,
+    projeto_id: int,
+    area_interesse_id: int,
+) -> dict[str, Any] | None:
+    return executar_geojson_select(
+        conn,
+        """
+        WITH base AS (
+            SELECT
+                ai.id,
+                ai.projeto_id,
+                ai.nome,
+                to_jsonb(ai) ->> 'tipo' AS tipo,
+                to_jsonb(ai) ->> 'area_ha' AS area_ha,
+                ST_SimplifyPreserveTopology(
+                    ST_Transform(ai.geom, 4326),
+                    0.00001
+                ) AS geom_4326
+            FROM projetos.area_interesse AS ai
+            WHERE ai.projeto_id = %s
+              AND ai.id = %s
+              AND ai.geom IS NOT NULL
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', COALESCE(
+                json_agg(
+                    json_build_object(
+                        'type', 'Feature',
+                        'geometry', ST_AsGeoJSON(b.geom_4326)::json,
+                        'properties', json_build_object(
+                            'id', b.id,
+                            'projeto_id', b.projeto_id,
+                            'nome', b.nome,
+                            'tipo', b.tipo,
+                            'area_ha', b.area_ha
+                        )
+                    )
+                ),
+                '[]'::json
+            )
+        ) AS geojson
+        FROM base AS b;
+        """,
+        (projeto_id, area_interesse_id),
+    )
+
+
+def carregar_geojson_buffer(
+    conn: Any,
+    projeto_id: int,
+    area_interesse_id: int,
+    distancia_buffer_m: int = 1000,
+) -> dict[str, Any] | None:
+    return executar_geojson_select(
+        conn,
+        """
+        WITH base AS (
+            SELECT
+                ai.id AS area_interesse_id,
+                ai.projeto_id,
+                ST_SimplifyPreserveTopology(
+                    ST_Transform(
+                        ST_Buffer(ST_Transform(ai.geom, 31982), %s),
+                        4326
+                    ),
+                    0.00001
+                ) AS geom_4326
+            FROM projetos.area_interesse AS ai
+            WHERE ai.projeto_id = %s
+              AND ai.id = %s
+              AND ai.geom IS NOT NULL
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', COALESCE(
+                json_agg(
+                    json_build_object(
+                        'type', 'Feature',
+                        'geometry', ST_AsGeoJSON(b.geom_4326)::json,
+                        'properties', json_build_object(
+                            'projeto_id', b.projeto_id,
+                            'area_interesse_id', b.area_interesse_id,
+                            'distancia_buffer_m', %s
+                        )
+                    )
+                ),
+                '[]'::json
+            )
+        ) AS geojson
+        FROM base AS b;
+        """,
+        (distancia_buffer_m, projeto_id, area_interesse_id, distancia_buffer_m),
+    )
+
+
+def carregar_geojson_microbacias(
+    conn: Any,
+    projeto_id: int,
+    area_interesse_id: int,
+) -> dict[str, Any] | None:
+    return executar_geojson_select(
+        conn,
+        """
+        WITH area_interesse AS (
+            SELECT ST_Transform(ai.geom, 31982) AS geom_31982
+            FROM projetos.area_interesse AS ai
+            WHERE ai.projeto_id = %s
+              AND ai.id = %s
+              AND ai.geom IS NOT NULL
+        ),
+        base AS (
+            SELECT
+                mb.cd_micro,
+                mb.nm_micro,
+                mb.nm_rio_pri,
+                ST_SimplifyPreserveTopology(
+                    ST_Transform(ST_MakeValid(mb.geom), 4326),
+                    0.00001
+                ) AS geom_4326
+            FROM hidrografia.microbacias_sigeo_sirhesc_aguassc AS mb
+            INNER JOIN area_interesse AS ai
+                ON mb.geom && ST_Transform(ai.geom_31982, 29192)
+               AND ST_Intersects(
+                    ST_Transform(ST_MakeValid(mb.geom), 31982),
+                    ai.geom_31982
+               )
+            WHERE mb.geom IS NOT NULL
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', COALESCE(
+                json_agg(
+                    json_build_object(
+                        'type', 'Feature',
+                        'geometry', ST_AsGeoJSON(b.geom_4326)::json,
+                        'properties', json_build_object(
+                            'cd_micro', b.cd_micro,
+                            'nm_micro', b.nm_micro,
+                            'nm_rio_pri', b.nm_rio_pri
+                        )
+                    )
+                ),
+                '[]'::json
+            )
+        ) AS geojson
+        FROM base AS b;
+        """,
+        (projeto_id, area_interesse_id),
+    )
+
+
+def carregar_geojson_setores(
+    conn: Any,
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+) -> dict[str, Any] | None:
+    return executar_geojson_select(
+        conn,
+        """
+        WITH base AS (
+            SELECT
+                si.cd_setor,
+                si.area_intersecao_m2,
+                si.area_intersecao_ha,
+                si.percentual_area_interesse,
+                si.percentual_setor_intersectado,
+                ST_SimplifyPreserveTopology(
+                    ST_Transform(si.geom, 4326),
+                    0.00001
+                ) AS geom_4326
+            FROM resultados.setores_intersectados AS si
+            WHERE si.execucao_id = %s
+              AND si.projeto_id = %s
+              AND si.area_interesse_id = %s
+              AND si.geom IS NOT NULL
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', COALESCE(
+                json_agg(
+                    json_build_object(
+                        'type', 'Feature',
+                        'geometry', ST_AsGeoJSON(b.geom_4326)::json,
+                        'properties', json_build_object(
+                            'cd_setor', b.cd_setor,
+                            'area_intersecao_m2', b.area_intersecao_m2,
+                            'area_intersecao_ha', b.area_intersecao_ha,
+                            'percentual_area_interesse', b.percentual_area_interesse,
+                            'percentual_setor_intersectado', b.percentual_setor_intersectado
+                        )
+                    )
+                ),
+                '[]'::json
+            )
+        ) AS geojson
+        FROM base AS b;
+        """,
+        (execucao_id, projeto_id, area_interesse_id),
+    )
+
+
+def carregar_geojson_hidrografia(
+    conn: Any,
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+) -> dict[str, Any] | None:
+    return executar_geojson_select(
+        conn,
+        """
+        WITH base AS (
+            SELECT
+                ih.idcda,
+                ih.cocursodag,
+                ih.nuordemcda,
+                ih.nunivotcda,
+                ih.comprimento_m,
+                ih.unidade_analise,
+                ST_SimplifyPreserveTopology(
+                    ST_Transform(ih.geom, 4326),
+                    0.00001
+                ) AS geom_4326
+            FROM resultados.intersecao_hidrografia AS ih
+            WHERE ih.execucao_id = %s
+              AND ih.projeto_id = %s
+              AND ih.area_interesse_id = %s
+              AND ih.unidade_analise = 'buffer_1000m'
+              AND ih.geom IS NOT NULL
+        )
+        SELECT json_build_object(
+            'type', 'FeatureCollection',
+            'features', COALESCE(
+                json_agg(
+                    json_build_object(
+                        'type', 'Feature',
+                        'geometry', ST_AsGeoJSON(b.geom_4326)::json,
+                        'properties', json_build_object(
+                            'idcda', b.idcda,
+                            'cocursodag', b.cocursodag,
+                            'nuordemcda', b.nuordemcda,
+                            'nunivotcda', b.nunivotcda,
+                            'comprimento_m', b.comprimento_m,
+                            'unidade_analise', b.unidade_analise
+                        )
+                    )
+                ),
+                '[]'::json
+            )
+        ) AS geojson
+        FROM base AS b;
+        """,
+        (execucao_id, projeto_id, area_interesse_id),
+    )
+
+
+def geojson_tem_features(geojson: dict[str, Any] | None) -> bool:
+    return bool(geojson and geojson.get("features"))
+
+
+def estilo_area_interesse(_: Any) -> dict[str, Any]:
+    return {"color": "#d73027", "weight": 4, "fillColor": "#d73027", "fillOpacity": 0.08}
+
+
+def estilo_buffer(_: Any) -> dict[str, Any]:
+    return {"color": "#fdae61", "weight": 2, "fillColor": "#fdae61", "fillOpacity": 0.05}
+
+
+def estilo_microbacias(_: Any) -> dict[str, Any]:
+    return {"color": "#4575b4", "weight": 2, "fillColor": "#4575b4", "fillOpacity": 0.04}
+
+
+def estilo_setores(_: Any) -> dict[str, Any]:
+    return {"color": "#313695", "weight": 1, "fillColor": "#313695", "fillOpacity": 0.03}
+
+
+def estilo_hidrografia(_: Any) -> dict[str, Any]:
+    return {"color": "#2b83ba", "weight": 3, "opacity": 0.85}
+
+
+def adicionar_geojson(
+    mapa: Any,
+    geojson: dict[str, Any] | None,
+    nome: str,
+    style_function: Any,
+) -> Any | None:
+    if folium is None or not geojson_tem_features(geojson):
+        return None
+    camada = folium.GeoJson(
+        geojson,
+        name=nome,
+        style_function=style_function,
+    )
+    camada.add_to(mapa)
+    return camada
+
+LIMITES_ANALISE_RESUMO = {
+    "Área de interesse": "area_interesse",
+    "Buffer de 1000 m": "buffer_1000m",
+    "Microbacias interceptadas": "microbacia",
+    "Setores censitários intersectados": "setores_censitarios",
+}
+
+FISICO_VIEW_POR_LIMITE = {
+    "area_interesse": "resultados.vw_relatorio_fisico_biotico_area_interesse",
+    "buffer_1000m": "resultados.vw_relatorio_fisico_biotico_buffer_1000m",
+    "microbacia": "resultados.vw_relatorio_fisico_biotico_microbacias",
+}
+
+TEMAS_FISICO_BIOTICOS = (
+    "geologia",
+    "geomorfologia",
+    "hidrogeologia",
+    "pedologia",
+    "vegetacao",
+)
+
+
+def executar_select_df(
+    conn: Any,
+    sql: str,
+    params: tuple[Any, ...] | list[Any] | None = None,
+) -> pd.DataFrame:
+    try:
+        return pd.read_sql_query(sql, conn, params=tuple(params or ()))
+    except Exception as exc:  # pragma: no cover - exibido na interface
+        st.warning(f"Não foi possível consultar dados: {exc}")
+        return pd.DataFrame()
+
+
+def view_existe_conn(conn: Any, view_name: str) -> bool:
+    data = executar_select_df(
+        conn,
+        "SELECT to_regclass(%s) AS objeto;",
+        (view_name,),
+    )
+    if data.empty:
+        return False
+    return pd.notna(data.iloc[0].get("objeto"))
+
+
+def numero(valor: Any) -> float | None:
+    if valor is None or pd.isna(valor):
+        return None
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def formatar_numero(valor: Any, casas: int = 2) -> str:
+    valor_num = numero(valor)
+    if valor_num is None:
+        return "-"
+    return f"{valor_num:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def formatar_inteiro(valor: Any) -> str:
+    valor_num = numero(valor)
+    if valor_num is None:
+        return "-"
+    return f"{valor_num:,.0f}".replace(",", ".")
+
+
+def percentual_seguro(numerador: Any, denominador: Any) -> float | None:
+    num = numero(numerador)
+    den = numero(denominador)
+    if num is None or den in (None, 0):
+        return None
+    return (num / den) * 100.0
+
+
+def preparar_numericos(data: pd.DataFrame, colunas: tuple[str, ...]) -> pd.DataFrame:
+    resultado = data.copy()
+    for coluna in colunas:
+        if coluna in resultado.columns:
+            resultado[coluna] = pd.to_numeric(resultado[coluna], errors="coerce")
+    return resultado
+
+
+def carregar_microbacias_resumo(
+    conn: Any,
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+) -> pd.DataFrame:
+    view_name = "resultados.vw_relatorio_fisico_biotico_microbacias"
+    if not view_existe_conn(conn, view_name):
+        return pd.DataFrame()
+    return executar_select_df(
+        conn,
+        f"""
+        SELECT DISTINCT
+            fb.cd_micro::text AS cd_micro,
+            fb.nm_micro::text AS nm_micro
+        FROM {view_name} AS fb
+        WHERE fb.execucao_id = %s
+          AND fb.projeto_id = %s
+          AND fb.area_interesse_id = %s
+        ORDER BY fb.nm_micro, fb.cd_micro;
+        """,
+        (execucao_id, projeto_id, area_interesse_id),
+    )
+
+
+def carregar_fisico_biotico_resumo(
+    conn: Any,
+    limite_analise: str,
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+    cd_micro: str | None = None,
+) -> pd.DataFrame:
+    if limite_analise == "setores_censitarios":
+        return pd.DataFrame()
+
+    view_name = FISICO_VIEW_POR_LIMITE[limite_analise]
+    if not view_existe_conn(conn, view_name):
+        st.info(f"View indisponível: {view_name}")
+        return pd.DataFrame()
+
+    if limite_analise == "microbacia":
+        filtro_micro = "AND fb.cd_micro::text = %s" if cd_micro else ""
+        params: list[Any] = [execucao_id, projeto_id, area_interesse_id]
+        if cd_micro:
+            params.append(cd_micro)
+        return executar_select_df(
+            conn,
+            f"""
+            SELECT
+                'Microbacias interceptadas'::text AS limite_analise,
+                fb.cd_micro::text AS microbacia_codigo,
+                fb.nm_micro::text AS microbacia,
+                fb.tema,
+                fb.valor_principal,
+                fb.area_ha,
+                fb.percentual_unidade_analise
+            FROM {view_name} AS fb
+            WHERE fb.execucao_id = %s
+              AND fb.projeto_id = %s
+              AND fb.area_interesse_id = %s
+              {filtro_micro}
+            ORDER BY fb.nm_micro, fb.tema, fb.area_ha DESC NULLS LAST;
+            """,
+            tuple(params),
+        )
+
+    limite_rotulo = "Área de interesse" if limite_analise == "area_interesse" else "Buffer de 1000 m"
+    return executar_select_df(
+        conn,
+        f"""
+        SELECT
+            %s::text AS limite_analise,
+            NULL::text AS microbacia_codigo,
+            NULL::text AS microbacia,
+            fb.tema,
+            fb.valor_principal,
+            fb.area_ha,
+            fb.percentual_unidade_analise
+        FROM {view_name} AS fb
+        WHERE fb.execucao_id = %s
+          AND fb.projeto_id = %s
+          AND fb.area_interesse_id = %s
+        ORDER BY fb.tema, fb.area_ha DESC NULLS LAST;
+        """,
+        (limite_rotulo, execucao_id, projeto_id, area_interesse_id),
+    )
+
+
+def montar_resumo_fisico_biotico(classes: pd.DataFrame) -> pd.DataFrame:
+    if classes.empty:
+        return pd.DataFrame(
+            columns=(
+                "tema",
+                "total_classes",
+                "area_total_ha",
+                "classe_dominante",
+                "area_classe_dominante_ha",
+                "percentual_dominante",
+            )
+        )
+    data = preparar_numericos(classes, ("area_ha", "percentual_unidade_analise"))
+    linhas = []
+    for tema, grupo in data.groupby("tema", dropna=False):
+        grupo_ordenado = grupo.sort_values("area_ha", ascending=False, na_position="last")
+        dominante = grupo_ordenado.iloc[0]
+        linhas.append(
+            {
+                "tema": tema,
+                "total_classes": int(grupo["valor_principal"].nunique(dropna=True)),
+                "area_total_ha": grupo["area_ha"].sum(skipna=True),
+                "classe_dominante": dominante.get("valor_principal"),
+                "area_classe_dominante_ha": dominante.get("area_ha"),
+                "percentual_dominante": dominante.get("percentual_unidade_analise"),
+            }
+        )
+    return pd.DataFrame(linhas).sort_values("tema")
+
+
+def carregar_socio_total_setores(
+    conn: Any,
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+) -> pd.DataFrame:
+    view_name = "resultados.vw_relatorio_socio_total_setores"
+    if not view_existe_conn(conn, view_name):
+        st.info(f"View indisponível: {view_name}")
+        return pd.DataFrame()
+    return executar_select_df(
+        conn,
+        f"""
+        SELECT
+            st.execucao_id,
+            st.projeto_id,
+            st.area_interesse_id,
+            st.numero_setores_intersectados,
+            st.setores_com_dados_completos,
+            st.setores_com_dados_parciais,
+            st.populacao_total_setores,
+            st.total_domicilios_setores,
+            st.domicilios_particulares_permanentes_ocupados_setores,
+            st.renda_media_responsavel_ponderada_responsaveis,
+            st.renda_media_responsavel_media_setores,
+            st.renda_mediana_responsavel_media_setores
+        FROM {view_name} AS st
+        WHERE st.execucao_id = %s
+          AND st.projeto_id = %s
+          AND st.area_interesse_id = %s;
+        """,
+        (execucao_id, projeto_id, area_interesse_id),
+    )
+
+
+def carregar_socio_contexto_setores(
+    conn: Any,
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+) -> pd.DataFrame:
+    view_name = "resultados.vw_relatorio_socio_contexto_setores"
+    if not view_existe_conn(conn, view_name):
+        return pd.DataFrame()
+    return executar_select_df(
+        conn,
+        f"""
+        SELECT
+            sc.cd_setor,
+            sc.percentual_area_interesse,
+            sc.populacao_total_setor,
+            sc.total_domicilios_setor,
+            sc.domicilios_particulares_permanentes_ocupados_setor,
+            sc.renda_media_responsavel_setor,
+            sc.renda_mediana_responsavel_setor,
+            sc.status_dados_setor
+        FROM {view_name} AS sc
+        WHERE sc.execucao_id = %s
+          AND sc.projeto_id = %s
+          AND sc.area_interesse_id = %s
+        ORDER BY sc.percentual_area_interesse DESC NULLS LAST;
+        """,
+        (execucao_id, projeto_id, area_interesse_id),
+    )
+
+
+def verificar_fonte_demografica(conn: Any) -> pd.DataFrame:
+    return executar_select_df(
+        conn,
+        """
+        SELECT
+            c.table_schema,
+            c.table_name,
+            c.column_name
+        FROM information_schema.columns AS c
+        WHERE c.table_schema = 'resultados'
+          AND (
+                lower(c.column_name) LIKE '%idade%'
+             OR lower(c.column_name) LIKE '%faixa%'
+             OR lower(c.column_name) LIKE '%sexo%'
+             OR lower(c.column_name) LIKE '%homem%'
+             OR lower(c.column_name) LIKE '%homens%'
+             OR lower(c.column_name) LIKE '%mulher%'
+             OR lower(c.column_name) LIKE '%mulheres%'
+             OR lower(c.column_name) LIKE '%grupo_etario%'
+          )
+        ORDER BY c.table_schema, c.table_name, c.column_name;
+        """,
+    )
+
+
+def carregar_hidrografia_resumo(
+    conn: Any,
+    limite_analise: str,
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+    cd_micro: str | None = None,
+) -> pd.DataFrame:
+    if limite_analise == "setores_censitarios":
+        return pd.DataFrame()
+
+    view_name = "resultados.vw_hidrografia_resumo"
+    if not view_existe_conn(conn, view_name):
+        st.info("Não há dados de hidrografia para esta execução.")
+        return pd.DataFrame()
+
+    unidade_analise = {
+        "area_interesse": "area_interesse",
+        "buffer_1000m": "buffer_1000m",
+        "microbacia": "microbacia",
+    }[limite_analise]
+    filtro_micro = "AND h.cd_micro::text = %s" if limite_analise == "microbacia" and cd_micro else ""
+    params: list[Any] = [execucao_id, projeto_id, area_interesse_id, unidade_analise]
+    if filtro_micro:
+        params.append(str(cd_micro))
+
+    return executar_select_df(
+        conn,
+        f"""
+        SELECT
+            h.unidade_analise,
+            h.cd_micro,
+            h.nm_micro,
+            h.nm_rio_pri,
+            h.nuordemcda,
+            h.nunivotcda,
+            h.quantidade_trechos,
+            h.comprimento_total_m,
+            h.comprimento_total_km
+        FROM {view_name} AS h
+        WHERE h.execucao_id = %s
+          AND h.projeto_id = %s
+          AND h.area_interesse_id = %s
+          AND h.unidade_analise = %s
+          {filtro_micro}
+        ORDER BY h.nm_micro, h.nuordemcda, h.nunivotcda;
+        """,
+        tuple(params),
+    )
+
 def pagina_inicio() -> None:
     st.title(APP_TITLE)
     st.write(
@@ -691,6 +1371,476 @@ def pagina_resultados() -> None:
             st.warning(f"View indisponível: {view_name}")
 
 
+def pagina_mapa() -> None:
+    st.title("Mapa")
+    st.caption(
+        "Visualização rápida em Folium. As geometrias são transformadas para EPSG:4326 "
+        "apenas para exibição; o processamento oficial permanece no PostGIS."
+    )
+
+    if folium is None or st_folium is None:
+        st.warning("Instale as dependências: python -m pip install folium streamlit-folium")
+        return
+
+    parametros_mapa = st.session_state.get("parametros_diagnostico", {})
+    distancia_padrao = int(parametros_mapa.get("distancia_buffer_m") or 1000)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        projeto_id = st.number_input(
+            "Projeto ID",
+            min_value=1,
+            value=int(st.session_state.get("projeto_id") or 1),
+            key="mapa_projeto_id",
+        )
+    with col2:
+        area_interesse_id = st.number_input(
+            "Área de interesse ID",
+            min_value=1,
+            value=int(st.session_state.get("area_interesse_id") or 1),
+            key="mapa_area_interesse_id",
+        )
+    with col3:
+        execucao_id_txt = st.text_input(
+            "Execução ID",
+            value=str(st.session_state.get("execucao_id") or ""),
+            key="mapa_execucao_id",
+        ).strip()
+    with col4:
+        distancia_buffer_m = st.number_input(
+            "Buffer (m)",
+            min_value=0,
+            value=distancia_padrao,
+            step=100,
+            key="mapa_distancia_buffer_m",
+        )
+
+    st.session_state["projeto_id"] = int(projeto_id)
+    st.session_state["area_interesse_id"] = int(area_interesse_id)
+    st.session_state["execucao_id"] = execucao_id_txt
+    st.session_state["projeto_sig_dir"] = st.text_input(
+        "Pasta SIG do projeto",
+        value=str(st.session_state.get("projeto_sig_dir") or ""),
+        key="mapa_projeto_sig_dir",
+    ).strip()
+
+    st.subheader("Camadas")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    mostrar_area = c1.checkbox("Área de interesse", value=True)
+    mostrar_buffer = c2.checkbox("Buffer", value=bool(parametros_mapa.get("usar_buffer", True)))
+    mostrar_microbacias = c3.checkbox("Microbacias", value=True)
+    mostrar_setores = c4.checkbox("Setores censitários", value=True)
+    mostrar_hidrografia = c5.checkbox("Hidrografia", value=bool(parametros_mapa.get("hidrografia_ana", False)))
+
+    execucao_id_int: int | None = None
+    if execucao_id_txt:
+        try:
+            execucao_id_int = int(execucao_id_txt)
+        except ValueError:
+            st.warning("Informe um execucao_id numérico para carregar setores e hidrografia.")
+
+    mapa = folium.Map(location=[-27.6, -48.5], zoom_start=12, tiles="OpenStreetMap")
+    camada_area = None
+
+    try:
+        with get_connection() as conn:
+            conn.set_session(readonly=True, autocommit=True)
+
+            if mostrar_area:
+                area_geojson = carregar_geojson_area_interesse(conn, int(projeto_id), int(area_interesse_id))
+                camada_area = adicionar_geojson(
+                    mapa,
+                    area_geojson,
+                    "Área de interesse",
+                    estilo_area_interesse,
+                )
+                if camada_area is None:
+                    st.warning("Área de interesse não encontrada.")
+
+            if mostrar_buffer:
+                buffer_geojson = carregar_geojson_buffer(
+                    conn,
+                    int(projeto_id),
+                    int(area_interesse_id),
+                    int(distancia_buffer_m),
+                )
+                camada_buffer = adicionar_geojson(
+                    mapa,
+                    buffer_geojson,
+                    f"Buffer {int(distancia_buffer_m)} m",
+                    estilo_buffer,
+                )
+                if camada_buffer is None:
+                    st.warning("Buffer não encontrado para a área de interesse.")
+
+            if mostrar_microbacias:
+                microbacias_geojson = carregar_geojson_microbacias(conn, int(projeto_id), int(area_interesse_id))
+                camada_microbacias = adicionar_geojson(
+                    mapa,
+                    microbacias_geojson,
+                    "Microbacias interceptadas",
+                    estilo_microbacias,
+                )
+                if camada_microbacias is None:
+                    st.warning("Nenhuma microbacia encontrada.")
+
+            if mostrar_setores:
+                if execucao_id_int is None:
+                    st.info("Informe uma execução para carregar setores censitários.")
+                else:
+                    setores_geojson = carregar_geojson_setores(
+                        conn,
+                        execucao_id_int,
+                        int(projeto_id),
+                        int(area_interesse_id),
+                    )
+                    camada_setores = adicionar_geojson(
+                        mapa,
+                        setores_geojson,
+                        "Setores censitários",
+                        estilo_setores,
+                    )
+                    if camada_setores is None:
+                        st.warning("Nenhum setor censitário encontrado para esta execução.")
+                    else:
+                        st.caption(
+                            "Setores censitários usam a geometria disponível em "
+                            "resultados.setores_intersectados."
+                        )
+
+            if mostrar_hidrografia:
+                if execucao_id_int is None:
+                    st.info("Informe uma execução para carregar hidrografia.")
+                else:
+                    hidrografia_geojson = carregar_geojson_hidrografia(
+                        conn,
+                        execucao_id_int,
+                        int(projeto_id),
+                        int(area_interesse_id),
+                    )
+                    camada_hidrografia = adicionar_geojson(
+                        mapa,
+                        hidrografia_geojson,
+                        "Hidrografia ANA",
+                        estilo_hidrografia,
+                    )
+                    if camada_hidrografia is None:
+                        st.warning("Nenhum registro de hidrografia encontrado para esta execução.")
+    except Exception as exc:  # pragma: no cover - exibido na interface
+        st.error(f"Não foi possível carregar as camadas do mapa: {exc}")
+        return
+
+    if camada_area is not None:
+        try:
+            mapa.fit_bounds(camada_area.get_bounds())
+        except Exception:
+            pass
+
+    folium.LayerControl().add_to(mapa)
+    st_folium(mapa, width=None, height=650)
+
+def exibir_fisico_biotico_resumo(classes_fb: pd.DataFrame, limite_analise: str) -> None:
+    st.subheader("Físico-biótico")
+    if limite_analise == "setores_censitarios":
+        st.info("Resumo físico-biótico por setor censitário ainda não disponível nesta versão.")
+        return
+    if classes_fb.empty:
+        st.info("Nenhum dado físico-biótico encontrado para os filtros selecionados.")
+        return
+
+    classes_fb = preparar_numericos(classes_fb, ("area_ha", "percentual_unidade_analise"))
+    classes_fb["valor_principal"] = classes_fb["valor_principal"].fillna("Sem classificação informada")
+    resumo = montar_resumo_fisico_biotico(classes_fb)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Temas", formatar_inteiro(resumo["tema"].nunique()))
+    col2.metric("Classes", formatar_inteiro(resumo["total_classes"].sum()))
+    col3.metric("Maior dominante", f"{formatar_numero(resumo['percentual_dominante'].max(), 2)}%")
+
+    st.dataframe(resumo, use_container_width=True)
+    st.dataframe(
+        classes_fb[
+            [
+                "limite_analise",
+                "microbacia",
+                "tema",
+                "valor_principal",
+                "area_ha",
+                "percentual_unidade_analise",
+            ]
+        ],
+        use_container_width=True,
+    )
+
+    fig_classes = px.bar(
+        resumo.sort_values("total_classes"),
+        x="total_classes",
+        y="tema",
+        orientation="h",
+        title="Classes por tema",
+    )
+    st.plotly_chart(fig_classes, use_container_width=True)
+
+    fig_dominante = px.bar(
+        resumo.sort_values("percentual_dominante"),
+        x="percentual_dominante",
+        y="tema",
+        orientation="h",
+        title="Percentual dominante por tema",
+    )
+    st.plotly_chart(fig_dominante, use_container_width=True)
+
+    fig_area = px.bar(
+        resumo.sort_values("area_total_ha"),
+        x="area_total_ha",
+        y="tema",
+        orientation="h",
+        title="Área total por tema (ha)",
+    )
+    st.plotly_chart(fig_area, use_container_width=True)
+
+
+def exibir_socioeconomico_resumo(total_socio: pd.DataFrame, contexto_socio: pd.DataFrame) -> None:
+    st.subheader("Socioeconômico")
+    st.info("Os dados socioeconômicos são apresentados para os setores censitários intersectados pela área de interesse.")
+    if total_socio.empty:
+        st.info("Nenhum dado socioeconômico encontrado para os filtros selecionados.")
+        return
+
+    total_socio = preparar_numericos(
+        total_socio,
+        (
+            "numero_setores_intersectados",
+            "setores_com_dados_completos",
+            "setores_com_dados_parciais",
+            "populacao_total_setores",
+            "total_domicilios_setores",
+            "domicilios_particulares_permanentes_ocupados_setores",
+            "renda_media_responsavel_ponderada_responsaveis",
+        ),
+    )
+    linha = total_socio.iloc[0]
+    perc_ocupados = percentual_seguro(
+        linha.get("domicilios_particulares_permanentes_ocupados_setores"),
+        linha.get("total_domicilios_setores"),
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("População total", formatar_inteiro(linha.get("populacao_total_setores")))
+    col2.metric("Domicílios totais", formatar_inteiro(linha.get("total_domicilios_setores")))
+    col3.metric("Domicílios ocupados", f"{formatar_numero(perc_ocupados, 2)}%")
+    col4.metric("Renda média ponderada", formatar_numero(linha.get("renda_media_responsavel_ponderada_responsaveis"), 2))
+
+    col5, col6, col7 = st.columns(3)
+    col5.metric("Setores", formatar_inteiro(linha.get("numero_setores_intersectados")))
+    col6.metric("Dados completos", formatar_inteiro(linha.get("setores_com_dados_completos")))
+    col7.metric("Dados parciais", formatar_inteiro(linha.get("setores_com_dados_parciais")))
+
+    st.dataframe(total_socio, use_container_width=True)
+    if not contexto_socio.empty:
+        st.dataframe(contexto_socio, use_container_width=True)
+        if "status_dados_setor" in contexto_socio.columns:
+            status = contexto_socio["status_dados_setor"].value_counts(dropna=False).reset_index()
+            status.columns = ["status_dados_setor", "quantidade"]
+            fig_status = px.bar(
+                status,
+                x="status_dados_setor",
+                y="quantidade",
+                title="Setores por status de dados",
+            )
+            st.plotly_chart(fig_status, use_container_width=True)
+
+    st.markdown("#### Pirâmide etária")
+    st.info("Dados de pirâmide etária ainda não disponíveis para esta execução.")
+
+    st.markdown("#### Estrutura por sexo")
+    st.info("Dados de estrutura por sexo ainda não disponíveis para esta execução.")
+
+
+def exibir_hidrografia_resumo(hidrografia: pd.DataFrame, limite_analise: str) -> None:
+    st.subheader("Hidrografia")
+    if limite_analise == "setores_censitarios":
+        st.info("Hidrografia por setor censitário ainda não disponível nesta versão.")
+        return
+    if hidrografia.empty:
+        st.info("Não há dados de hidrografia para esta execução.")
+        return
+
+    hidrografia = preparar_numericos(
+        hidrografia,
+        ("quantidade_trechos", "comprimento_total_m", "comprimento_total_km"),
+    )
+    quantidade_trechos = hidrografia["quantidade_trechos"].sum(skipna=True)
+    comprimento_total_km = hidrografia["comprimento_total_km"].sum(skipna=True)
+
+    col1, col2 = st.columns(2)
+    col1.metric("Trechos", formatar_inteiro(quantidade_trechos))
+    col2.metric("Comprimento total km", formatar_numero(comprimento_total_km, 3))
+
+    st.dataframe(hidrografia, use_container_width=True)
+
+    por_micro = (
+        hidrografia.groupby(["cd_micro", "nm_micro"], dropna=False, as_index=False)["comprimento_total_km"]
+        .sum()
+        .sort_values("comprimento_total_km", ascending=False)
+    )
+    if not por_micro.empty:
+        por_micro["microbacia"] = por_micro["nm_micro"].fillna(por_micro["cd_micro"].fillna("Sem microbacia"))
+        fig_micro = px.bar(
+            por_micro,
+            x="comprimento_total_km",
+            y="microbacia",
+            orientation="h",
+            title="Comprimento total por microbacia (km)",
+        )
+        st.plotly_chart(fig_micro, use_container_width=True)
+
+    por_ordem = (
+        hidrografia.groupby("nuordemcda", dropna=False, as_index=False)
+        .agg(
+            comprimento_total_km=("comprimento_total_km", "sum"),
+            quantidade_trechos=("quantidade_trechos", "sum"),
+        )
+        .sort_values("nuordemcda")
+    )
+    if not por_ordem.empty:
+        fig_comprimento = px.bar(
+            por_ordem,
+            x="nuordemcda",
+            y="comprimento_total_km",
+            title="Comprimento por ordem do curso d'água (km)",
+        )
+        st.plotly_chart(fig_comprimento, use_container_width=True)
+        fig_quantidade = px.bar(
+            por_ordem,
+            x="nuordemcda",
+            y="quantidade_trechos",
+            title="Quantidade de trechos por ordem do curso d'água",
+        )
+        st.plotly_chart(fig_quantidade, use_container_width=True)
+
+
+def pagina_resumo_estatistico() -> None:
+    st.title("Resumo estatístico")
+
+    st.subheader("Filtros")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        projeto_id = st.number_input(
+            "Projeto ID",
+            min_value=1,
+            value=int(st.session_state.get("projeto_id") or 1),
+            key="resumo_projeto_id",
+        )
+    with col2:
+        area_interesse_id = st.number_input(
+            "Área de interesse ID",
+            min_value=1,
+            value=int(st.session_state.get("area_interesse_id") or 1),
+            key="resumo_area_interesse_id",
+        )
+    with col3:
+        execucao_id_txt = st.text_input(
+            "Execução ID",
+            value=str(st.session_state.get("execucao_id") or ""),
+            key="resumo_execucao_id",
+        ).strip()
+    with col4:
+        limite_label = st.selectbox(
+            "Limite de análise",
+            list(LIMITES_ANALISE_RESUMO.keys()),
+            key="resumo_limite_analise",
+        )
+
+    st.session_state["projeto_id"] = int(projeto_id)
+    st.session_state["area_interesse_id"] = int(area_interesse_id)
+    st.session_state["execucao_id"] = execucao_id_txt
+
+    if not execucao_id_txt:
+        st.info("Informe uma execução para consultar o resumo estatístico.")
+        return
+    try:
+        execucao_id = int(execucao_id_txt)
+    except ValueError:
+        st.warning("Informe um execucao_id numérico.")
+        return
+
+    limite_analise = LIMITES_ANALISE_RESUMO[limite_label]
+    cd_micro_selecionada: str | None = None
+    classes_fb = pd.DataFrame()
+    total_socio = pd.DataFrame()
+    contexto_socio = pd.DataFrame()
+    hidrografia = pd.DataFrame()
+
+    try:
+        with get_connection() as conn:
+            conn.set_session(readonly=True, autocommit=True)
+
+            if limite_analise == "microbacia":
+                microbacias = carregar_microbacias_resumo(
+                    conn,
+                    execucao_id,
+                    int(projeto_id),
+                    int(area_interesse_id),
+                )
+                if microbacias.empty:
+                    st.info("Nenhuma microbacia encontrada para esta execução.")
+                else:
+                    opcoes_micro = ["Todas as microbacias"]
+                    for _, row in microbacias.iterrows():
+                        nome_micro = row.get("nm_micro") if pd.notna(row.get("nm_micro")) else "Sem nome"
+                        opcoes_micro.append(f"{row.get('cd_micro')} - {nome_micro}")
+                    escolha_micro = st.selectbox("Microbacia", opcoes_micro, key="resumo_microbacia")
+                    if escolha_micro != "Todas as microbacias":
+                        cd_micro_selecionada = escolha_micro.split(" - ", 1)[0]
+
+            if limite_analise == "setores_censitarios":
+                st.info("O limite por setor censitário usa somente o bloco socioeconômico nesta versão.")
+            else:
+                classes_fb = carregar_fisico_biotico_resumo(
+                    conn,
+                    limite_analise,
+                    execucao_id,
+                    int(projeto_id),
+                    int(area_interesse_id),
+                    cd_micro_selecionada,
+                )
+
+            total_socio = carregar_socio_total_setores(
+                conn,
+                execucao_id,
+                int(projeto_id),
+                int(area_interesse_id),
+            )
+            contexto_socio = carregar_socio_contexto_setores(
+                conn,
+                execucao_id,
+                int(projeto_id),
+                int(area_interesse_id),
+            )
+            fontes_demograficas = verificar_fonte_demografica(conn)
+            if not fontes_demograficas.empty:
+                st.caption(
+                    "Foram encontradas colunas com termos demográficos em views do schema resultados, "
+                    "mas ainda não há mapeamento validado para pirâmide etária ou estrutura por sexo."
+                )
+
+            hidrografia = carregar_hidrografia_resumo(
+                conn,
+                limite_analise,
+                execucao_id,
+                int(projeto_id),
+                int(area_interesse_id),
+                cd_micro_selecionada,
+            )
+    except Exception as exc:  # pragma: no cover - exibido na interface
+        st.error(f"Não foi possível carregar o resumo estatístico: {exc}")
+        return
+
+    exibir_fisico_biotico_resumo(classes_fb, limite_analise)
+    exibir_socioeconomico_resumo(total_socio, contexto_socio)
+    exibir_hidrografia_resumo(hidrografia, limite_analise)
+
 def main() -> None:
     configurar_pagina()
     inicializar_estado()
@@ -709,6 +1859,10 @@ def main() -> None:
         pagina_executar()
     elif pagina == "Resultados":
         pagina_resultados()
+    elif pagina == "Mapa":
+        pagina_mapa()
+    elif pagina == "Resumo estatístico":
+        pagina_resumo_estatistico()
 
 
 if __name__ == "__main__":

@@ -8,3 +8,5 @@ geoalchemy2
 matplotlib
 streamlit
 plotly
+folium
+streamlit-folium

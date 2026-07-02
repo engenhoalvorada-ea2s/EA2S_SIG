@@ -236,5 +236,36 @@ Pendências futuras da interface:
 4. Criar cadastro de projetos via formulário.
 5. Criar cadastro de áreas e camadas de análise.
 6. Implementar upload/importação de camadas, possivelmente com GeoPandas.
-7. Implementar visualização cartográfica interativa.
+7. Visualização cartográfica inicial com Folium adicionada em src/app_streamlit.py.
 8. Validar a interface em ambiente local com Streamlit após autorização para execução do app.
+9. Melhorar simbologia cartográfica das camadas no mapa Folium.
+10. Permitir seleção de camadas ambientais específicas para visualização.
+11. Criar mapa por tema ambiental.
+12. Implementar exportação de mapa estático para relatório.
+13. Página de resumo estatístico adicionada em `src/app_streamlit.py`.
+14. Integrar base etária e sexo do Censo para pirâmide etária e estrutura por sexo.
+15. Avaliar cálculo físico-biótico por setor censitário, se necessário.
+16. Avaliar hidrografia por setor censitário, se necessário.
+17. Permitir comparação entre múltiplos limites no mesmo gráfico.
+## Mapa Folium na interface
+
+Foi adicionada localmente a visualização cartográfica inicial com Folium/Leaflet na página `Mapa` da interface Streamlit. A página usa apenas consultas `SELECT`, transforma geometrias para EPSG:4326 somente para exibição e preserva o processamento oficial no banco/PostGIS.
+
+Pendências específicas:
+
+1. Testar a página `Mapa` em ambiente local após autorização para executar o app.
+2. Melhorar simbologia das camadas.
+3. Permitir seleção de camadas ambientais específicas.
+4. Criar visualização por tema ambiental.
+5. Implementar exportação de mapa estático para relatório.
+## Resumo estatístico na interface
+
+Foi adicionada localmente a página `Resumo estatístico` na interface Streamlit. A página usa consultas `SELECT`, pandas para agregações e Plotly para gráficos simples, sem alterar dados ou tabelas.
+
+Pendências específicas:
+
+1. Testar a página em ambiente local após autorização para executar o app.
+2. Integrar base etária e sexo do Censo para pirâmide etária e estrutura por sexo.
+3. Avaliar cálculo físico-biótico por setor censitário, se necessário.
+4. Avaliar hidrografia por setor censitário, se necessário.
+5. Permitir comparação entre múltiplos limites no mesmo gráfico.
