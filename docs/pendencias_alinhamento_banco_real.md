@@ -62,6 +62,8 @@ Esses indicadores devem permanecer inativos por enquanto, pois variancia nao dev
 - `sql/08_tabelas_tecnicas_socioeconomico.sql`: criado localmente como proposta de views tecnicas socioeconomicas; ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
 - `sql/09_consultas_relatorio_integrado.sql`: criado localmente como proposta de views integradas de relatorio; ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
 - `sql/10_hidrografia_ana.sql`: criado localmente como proposta do modulo de hidrografia ANA; usa a tabela real `hidrografia."bh6_curso_dagua_ANA_2022"` e os campos reais identificados, mas ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
+- `sql/11_config_camadas_analise.sql`: criado localmente como proposta de cadastro configuravel de camadas e perfis de diagnostico; ainda deve ser aplicado e testado manualmente no banco com autorizacao explicita.
+- `sql/15_perfil_atributos_inventario.sql`: recriado localmente como proposta de perfilamento de atributos no schema `importacao`; ainda deve ser aplicado e testado manualmente com autorizacao explicita.
 
 ## Conferencia final das chaves setoriais
 
@@ -91,10 +93,6 @@ Foi criada proposta local revisada para a tabela resultados.intersecao_fisico_bi
 10. Testar os campos `possui_dados_basicos`, `possui_dados_dppo`, `possui_dados_renda`, `possui_dados_saneamento` e `status_dados_setor` na view `resultados.vw_socio_contexto_setores`.
 11. Testar os campos `responsaveis_dppo_setor`, `responsaveis_dppo_setores` e `renda_media_responsavel_ponderada_responsaveis`.
 12. Testar os contadores de setores com dados disponiveis na view `resultados.vw_socio_contexto_setores_total`.
-13. Conferir se os filtros das views de populacao, renda e saneamento capturam corretamente os indicadores cadastrados.
-14. Conferir se a view `resultados.vw_socio_sintese_geral_area` encontra corretamente os nomes logicos reais dos indicadores e manter seu uso restrito a casos em que a estimativa proporcional por area seja adequada.
-15. Decidir futuramente se sera criada uma unidade `entorno_1000m`, excluindo a area de interesse.
-16. Definir se a microbacia dominante sera registrada em tabela de resumo ou apenas em texto tecnico.
 
 
 ## Primeira versao funcional validada
@@ -119,6 +117,78 @@ Resultados confirmados:
 - Nenhuma tabela dos schemas oficiais `geologia`, `geomorfologia`, `hidrogeologia`, `pedologia`, `vegetacao`, `hidrografia` ou `urbano` deve ser alterada.
 - O script proposto cria/altera apenas objetos no schema `resultados`.
 - O schema `logs` e usado somente para gravacao em `logs.processamento`, tabela ja existente.
+
+
+## Inventario e validacao de bases geograficas
+
+Foi criado localmente o primeiro modulo funcional de inventario e validacao de bases geograficas do EA2S SIG:
+
+- `sql/13_inventario_bases_geograficas.sql`;
+- `sql/14_inventario_hash_deduplicacao.sql`;
+- `sql/15_perfil_atributos_inventario.sql`;
+- aba `Inventariar nova base` em `src/app_streamlit.py`;
+- documentacao no `README.md`.
+
+A proposta cria objetos apenas no schema operacional `importacao`:
+
+- `importacao.lote_importacao`;
+- `importacao.inventario_arquivo`;
+- `importacao.vw_inventario_bases_geograficas`.
+
+Objetos adicionados pelo SQL 15 de perfilamento de atributos:
+
+- `importacao.perfil_atributo`;
+- `importacao.regra_conversao_atributo`;
+- `importacao.vw_perfil_atributos_inventario`.
+
+
+O modulo permite entrada por upload, caminho local/rede ou URL pendente. Upload aceita GPKG, GeoJSON, JSON e shapefile zipado; caminho local/rede tambem permite `.shp` direto. O fluxo inclui leitura tecnica por GeoPandas/Fiona, validacao de CRS, geometria, bbox, feicoes, campos e tipos geometricos, resumo estatistico, perfilamento de atributos, Explorador Grafico com Plotly, hash SHA256 do arquivo original quando houver arquivo local, verificacao de duplicidade e registro de metadados de inventario. O fluxo nao importa dados para schemas oficiais e nao promove automaticamente camadas para `config.camadas_analise`.
+
+
+Correcoes locais do modulo 15:
+
+- Corrigido erro de assinatura no grafico exploratorio com `perfil_df`;
+- Ajustada inferencia de data para nao converter numeros/codigos puros em datas de 1970;
+- Ajustada inferencia de booleano para nao tratar campos `cd_*`, `cod*`, `id`, `mslink`, setor, quadra ou lote como booleanos apenas por terem valores 0/1;
+- Campos `id`, `mslink`, `cd_*`, `cod*`, `fid`, `gid`, `objectid`, setor, quadra, lote, inscricao e matricula passam a priorizar `codigo`.
+- Melhorada a selecao de eixos do Explorador Grafico, com modo recomendado e modo avancado;
+- Incluidos campos opcionais de cor/agrupamento, rotulo, hover, tamanho e facet/coluna de separacao;
+- Graficos de barra, pizza, treemap e sunburst passam a poder usar contagem automatica quando nao houver coluna numerica de valor.
+- Corrigida regra que impedia registrar inventario com geometria invalida;
+- Corrigida consulta de inventarios recentes para nao depender de coluna criado_em inexistente na view;
+- Criado ajuste complementar local sql/16_ajuste_view_inventario_criado_em.sql para padronizar datas da view de inventario.
+- Corrigida logica do botao Registrar inventario;
+- Removido bloqueio causado por checkbox dentro de st.form;
+- Validacao do registro passa a ocorrer apos o clique no botao;
+- Geometria invalida continua permitindo inventario, mas bloqueia staging futuro.
+
+Pendencias especificas:
+
+1. Aplicar `sql/13_inventario_bases_geograficas.sql` no banco somente com autorizacao explicita.
+2. Aplicar `sql/14_inventario_hash_deduplicacao.sql` no banco somente com autorizacao explicita.
+3. Testar deduplicacao por hash, confirmando bloqueio do registro normal e liberacao apenas com `Registrar mesmo assim como novo inventário`.
+4. Testar o inventario com arquivo GPKG.
+5. Testar o inventario com shapefile zipado, incluindo casos com e sem `.prj`.
+6. Testar o inventario com GeoJSON.
+7. Testar o Explorador Grafico com barras, linhas, dispersao, histograma, box plot, violino, area, heatmap, treemap, sunburst e pizza opcional.
+8. Criar etapa posterior de importacao para staging, sem alterar schemas oficiais diretamente.
+9. Criar etapa posterior de promocao controlada para schema oficial apos revisao tecnica.
+10. Criar cadastro automatico em `config.camadas_analise` somente para bases aprovadas.
+11. Avaliar se registros duplicados de teste devem ser marcados como `arquivado`, sem apagar dados.
+12. Implementar controle de usuarios, login e trilha de auditoria para fluxos de importacao e promocao.
+13. Aplicar `sql/15_perfil_atributos_inventario.sql` no banco somente com autorizacao explicita.
+14. Testar com base de zoneamento PMF, conferindo campos categóricos, textos e codigos.
+15. Testar campos monetarios, percentuais e datas, incluindo valores em texto como `R$`, `%`, `DD/MM/YYYY`, `MM/YYYY` e `YYYY`.
+16. Testar salvamento do perfil confirmado em `importacao.perfil_atributo` junto com o inventario.
+17. Testar o Explorador Grafico usando o dataframe convertido pelo perfil confirmado.
+18. Usar o perfil confirmado futuramente na importacao para staging.
+19. Usar o perfil confirmado futuramente nas exportacoes.
+20. Testar novamente com altimetria PMF (`alt_cn.shp`), conferindo `id`, `mslink`, `cd_*`, `nm_elevaca`, `cd_classe` e `dt_cadastr`.
+21. Testar com PGV para campos monetarios, codigos numericos longos e graficos com cor/hover/rotulo.
+22. Testar o Explorador Grafico com bases de zoneamento, validando campos de zona, uso, classe e descricao como rotulo/hover.
+23. Testar novamente com altimetria PMF (`alt_cn.shp`) em modo recomendado e avancado, especialmente graficos de dispersao com X/Y diferentes.
+24. Usar o perfil confirmado na futura importacao para staging, sem inferir novamente tipos sensiveis.
+25. Corrigir geometrias invalidas na futura etapa de staging antes de promocao para schema oficial ou uso no diagnostico.
 
 ## Recomendacoes
 
@@ -226,7 +296,8 @@ Melhorias de usabilidade aplicadas:
 - persistência local de `projeto_sig_dir` para comandos de exportação;
 - parâmetros do diagnóstico consolidados em `st.session_state["parametros_diagnostico"]`;
 - comandos PowerShell montados sem execução automática;
-- avisos específicos para exportações e para ambiente QGIS/GDAL no GPKG.
+- avisos específicos para exportações e para ambiente QGIS/GDAL no GPKG;
+- comentários didáticos em português no arquivo `src/app_streamlit.py`, sem alteração intencional de lógica, SQL ou comportamento.
 
 Pendências futuras da interface:
 
@@ -242,11 +313,6 @@ Pendências futuras da interface:
 10. Permitir seleção de camadas ambientais específicas para visualização.
 11. Criar mapa por tema ambiental.
 12. Implementar exportação de mapa estático para relatório.
-13. Página de resumo estatístico adicionada em `src/app_streamlit.py`.
-14. Integrar base etária e sexo do Censo para pirâmide etária e estrutura por sexo.
-15. Avaliar cálculo físico-biótico por setor censitário, se necessário.
-16. Avaliar hidrografia por setor censitário, se necessário.
-17. Permitir comparação entre múltiplos limites no mesmo gráfico.
 ## Mapa Folium na interface
 
 Foi adicionada localmente a visualização cartográfica inicial com Folium/Leaflet na página `Mapa` da interface Streamlit. A página usa apenas consultas `SELECT`, transforma geometrias para EPSG:4326 somente para exibição e preserva o processamento oficial no banco/PostGIS.
@@ -269,3 +335,96 @@ Pendências específicas:
 3. Avaliar cálculo físico-biótico por setor censitário, se necessário.
 4. Avaliar hidrografia por setor censitário, se necessário.
 5. Permitir comparação entre múltiplos limites no mesmo gráfico.
+
+## Cadastro configuravel de camadas de analise
+
+Foi criado localmente o script `sql/11_config_camadas_analise.sql` com a primeira versao do cadastro configuravel de camadas do EA2S SIG. A proposta cria objetos apenas no schema `config`:
+
+- `config.camadas_analise`;
+- `config.perfis_diagnostico`;
+- `config.perfil_camadas_analise`;
+- `config.vw_camadas_analise_ativas`;
+- `config.vw_perfis_diagnostico_camadas`.
+
+O cadastro inicial registra as camadas ja usadas no MVP: geologia, geomorfologia, hidrogeologia, pedologia, vegetacao e hidrografia ANA. A tabela ANA foi registrada como `hidrografia.bh6_curso_dagua_ANA_2022`; quando referenciada diretamente em SQL, o nome real deve usar aspas duplas: `hidrografia."bh6_curso_dagua_ANA_2022"`.
+
+A interface Streamlit foi preparada para ler `config.vw_camadas_analise_ativas`, exibir a pagina `Camadas de analise`, permitir cadastro/edicao apenas em `config.camadas_analise` e usar a selecao dinamica na pagina `Configurar diagnostico`. O processamento seletivo real por camada ainda nao foi implementado no backend.
+
+Pendencias especificas:
+
+1. Aplicar `sql/11_config_camadas_analise.sql` no banco somente com autorizacao explicita.
+2. Validar os registros automaticos de camadas apos a aplicacao do script.
+3. Testar a pagina `Camadas de analise` no Streamlit.
+4. Criar futuramente importador seguro de novas camadas espaciais para PostGIS.
+5. Implementar processamento seletivo real por camada no backend.
+6. Persistir parametros de execucao e camadas selecionadas em estrutura propria, quando o fluxo de execucao via interface for ativado.
+
+## Reorganizacao WebGIS da interface Streamlit
+
+A interface `src/app_streamlit.py` foi reorganizada localmente para uma estrutura de WebGIS operacional interno, com as areas `Início`, `Compor diagnóstico`, `Dashboard`, `Exportações`, `Banco de dados geográficos` e `Administração`.
+
+Melhorias aplicadas localmente:
+
+- `MODO_APP = "interno"` criado como marcador inicial para futura separação entre camada pública e camada restrita;
+- página inicial reorganizada como tela de entrada WebGIS limpa, com título institucional, mapa base Folium grande e botão `Iniciar projeto`;
+- página inicial limpa implementada, mantendo apenas título, texto curto, mapa base Folium e botão `Iniciar projeto`;
+- fluxo `Iniciar projeto` consolidado com `st.form` para selecionar ou cadastrar projeto, definir pasta SIG e validar upload de área de interesse;
+- cadastro de camadas concentrado em `Banco de dados geográficos`, com filtros, métricas, formulário técnico em expander e gráficos Plotly de administração;
+- `Compor diagnóstico` foi reorganizada em três passos: projeto/área, limites de análise e camadas/atributos, com `st.form` e agrupamento visual por grupo de camada;
+- `Dashboard` passa a agrupar mapa, resumo, físico-biótico, socioeconômico, hidrografia, Explorador Analítico e dados brutos em abas;
+- `Exportações` concentra montagem de comandos, sem executar automaticamente;
+- `Administração` concentra status técnico, projetos cadastrados, execuções recentes, parâmetros de sessão e pendências.
+
+Plotly foi incorporado como biblioteca principal de gráficos interativos do dashboard e da administração. As chaves dos gráficos foram centralizadas com `make_key(...)` e `exibir_plotly(...)` para corrigir colisões como `StreamlitDuplicateElementKey`. Folium permanece como base cartográfica operacional; mapas finais técnicos continuam dependendo de conferência no QGIS.
+
+Pendências específicas da interface WebGIS:
+
+1. Testar a interface reorganizada em ambiente local com Streamlit após autorização explícita.
+2. Implementar login e controle de acesso real.
+3. Criar camada pública somente leitura e definir separação pública/restrita.
+4. Testar o upload real de área de interesse em GPKG, GeoJSON e SHP zipado após autorização explícita.
+5. Implementar importação real de bases oficiais/reutilizáveis para PostGIS.
+6. Implementar processamento seletivo real das camadas escolhidas no backend.
+7. Persistir parâmetros de diagnóstico e camadas selecionadas em estrutura própria.
+8. Gerar relatório DOCX automatizado.
+9. Melhorar identidade visual da tela inicial e do dashboard após testes com usuários.
+10. Ampliar gráficos Plotly para histogramas, box plots, dispersão e séries temporais quando houver dados validados.
+
+## Fluxo funcional de projeto e área de interesse
+
+Foi implementado localmente em `src/app_streamlit.py` o fluxo funcional inicial para projeto e área de interesse:
+
+- botão `Iniciar projeto` na página `Início`;
+- modal com `st.dialog` quando disponível, com fallback em expander;
+- seleção de projeto existente ou cadastro de novo projeto;
+- carregamento automático dos dados reais do projeto selecionado, incluindo código, nome, cliente, município, UF, atividade, tipo de estudo, responsável, pasta SIG, status, descrição e datas quando as colunas existirem;
+- correção do comportamento que mostrava sugestão de código novo para projeto existente;
+- proteção contra edição acidental de projeto existente, com edição apenas mediante marcação de `Editar dados do projeto existente` e confirmação explícita;
+- seleção de área de interesse existente vinculada ao projeto, sem nova gravação;
+- inserção de nova área de interesse em projeto existente, com confirmação explícita;
+- definição de pasta SIG do projeto, com sugestão a partir de `EA2S_PROJECTS_ROOT` quando o projeto não tiver pasta cadastrada;
+- upload de área de interesse em GPKG, GeoJSON ou SHP zipado;
+- upload de área de interesse com GeoPandas, incluindo validação de CRS, geometria, número de feições, colunas, bbox e área;
+- transformação para EPSG:31982 antes de cálculo e gravação;
+- dissolução de múltiplas feições em uma única geometria MultiPolygon;
+- gravação transacional restrita a `projetos.projeto` e `projetos.area_interesse`, apenas mediante confirmação explícita;
+- atualização de `st.session_state` com `projeto_id`, `projeto_nome`, `area_interesse_id` e `projeto_sig_dir`.
+
+Foi criado localmente o script `sql/12_fluxo_projeto_area_interesse.sql`, que adiciona `pasta_sig` e `data_atualizacao` em `projetos.projeto` com `ADD COLUMN IF NOT EXISTS` e sem `DROP`.
+
+Também foi corrigida a geração de gráficos Plotly com a função auxiliar `exibir_plotly(fig, key)`, para evitar IDs duplicados no Streamlit.
+
+Pendências específicas:
+
+1. Aplicar `sql/12_fluxo_projeto_area_interesse.sql` no banco somente com autorização explícita.
+2. Testar o fluxo de upload com GPKG.
+3. Testar o fluxo de upload com GeoJSON.
+4. Testar o fluxo de upload com shapefile zipado contendo `.shp`, `.dbf`, `.shx` e preferencialmente `.prj`.
+5. Testar seleção de projeto existente e confirmar carregamento automático dos dados reais no modal.
+6. Testar seleção de área de interesse existente sem inserir registros novos.
+7. Confirmar inserção/atualização em `projetos.projeto` usando apenas as colunas reais disponíveis e apenas após confirmação explícita.
+8. Confirmar inserção em `projetos.area_interesse` com geometria MultiPolygon em EPSG:31982.
+9. Implementar importação de bases oficiais ou locais para o banco corporativo em módulo separado.
+10. Implementar login, camada pública e camada interna com controle de acesso real.
+11. Modularizar `src/app_streamlit.py` em componentes menores quando o fluxo estiver estabilizado.
+12. Melhorar futuramente a edição de projetos com perfis de usuário, trilha de auditoria e permissões por papel.

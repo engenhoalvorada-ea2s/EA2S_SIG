@@ -24,6 +24,7 @@ DB_NAME=ea2s_sig
 DB_USER=postgres
 DB_PASSWORD=sua_senha
 SRID_OPERACIONAL=31982
+EA2S_PROJECTS_ROOT=C:\Users\Usuario\OneDrive\EA2S\Projetos
 ```
 
 Nao versionar o arquivo `.env`.
@@ -54,6 +55,8 @@ SELECT current_database(), current_user, inet_server_port();
 
 A primeira versão da interface Streamlit fica em `src/app_streamlit.py`. Ela funciona como camada amigável para leitura, seleção e montagem de comandos do MVP, sem substituir o banco PostGIS nem os scripts existentes.
 
+O código da interface está comentado em português, com docstrings e notas curtas para facilitar manutenção, revisão técnica e entrada de novos colaboradores sem alterar a lógica operacional do MVP.
+
 Para iniciar a interface manualmente:
 
 ```powershell
@@ -68,10 +71,75 @@ Nesta versão, a interface:
 - lista execuções recentes do projeto/área para exportação e consulta de resultados;
 - monta comandos PowerShell para processamento, exportação de planilhas, gráficos e GPKG;
 - adiciona `--incluir-hidrografia` quando Hidrografia ANA estiver marcada;
-- consulta resultados existentes com `SELECT` e mostra tabelas com `st.dataframe`.
+- consulta resultados existentes com `SELECT` e mostra tabelas com `st.dataframe`;
+- lê o cadastro de camadas em `config.vw_camadas_analise_ativas`, quando o script `sql/11_config_camadas_analise.sql` já tiver sido aplicado com autorização.
 
 A interface inicial ainda não executa scripts automaticamente. A execução direta por botão será uma etapa futura, com controles adicionais de segurança. A exportação GPKG depende do `ogr2ogr` e do ambiente QGIS/GDAL configurado no PowerShell. A interface também ainda não cadastra projetos, não importa novas bases espaciais e não substitui os scripts de processamento.
 
+
+
+## Fluxo funcional de início de projeto
+
+A página `Início` do WebGIS funciona como entrada visual limpa do sistema: título institucional, texto curto, mapa base Folium grande e botão `Iniciar projeto`. Ela não exibe últimas execuções, status do banco, tabelas técnicas, debug ou dataframes; esses elementos ficam em `Administração`.
+
+O botão abre o fluxo em `st.dialog` quando disponível na versão instalada do Streamlit. Se `st.dialog` não estiver disponível, o mesmo fluxo aparece em um bloco expansível após o clique. O formulário interno usa `st.form` para evitar processamento parcial a cada interação do usuário.
+
+O fluxo permite:
+
+- selecionar projeto existente ou cadastrar novo projeto, com projetos existentes ordenados dos mais recentes para os mais antigos;
+- carregar automaticamente, para projeto existente, os dados já cadastrados em `projetos.projeto`;
+- manter código e nome do projeto existente protegidos contra edição acidental;
+- editar apenas campos permitidos do projeto existente, mediante confirmação explícita;
+- definir ou reaproveitar a pasta SIG vinculada ao projeto;
+- sugerir a pasta SIG a partir de `EA2S_PROJECTS_ROOT` no `.env` quando o projeto ainda não tiver pasta cadastrada;
+- criar a pasta SIG caso o usuário marque a confirmação correspondente;
+- reutilizar áreas de interesse existentes vinculadas ao projeto, sem inserir novos registros;
+- inserir nova área de interesse por upload em GPKG, GeoJSON ou SHP zipado;
+- validar CRS, geometria, número de feições, colunas, bbox e área em hectares com GeoPandas;
+- dissolver múltiplas feições em uma única geometria MultiPolygon;
+- gravar novo projeto em `projetos.projeto` e nova área em `projetos.area_interesse`, sempre com confirmação explícita;
+- seguir para `Compor diagnóstico` após selecionar ou salvar projeto e área.
+
+O navegador não permite escolher livremente uma pasta local como um software desktop. Por isso, a pasta SIG é informada como texto ou sugerida por:
+
+```env
+EA2S_PROJECTS_ROOT=C:\Users\Usuario\OneDrive\EA2S\Projetos
+```
+
+Antes de usar o fluxo completo no banco, aplicar manualmente e com autorização explícita o script:
+
+```text
+sql/12_fluxo_projeto_area_interesse.sql
+```
+
+Esse script adiciona `pasta_sig` e `data_atualizacao` em `projetos.projeto` quando essas colunas ainda não existirem. O app detecta as colunas reais antes de inserir ou atualizar dados, para evitar depender de campos opcionais inexistentes.
+
+## Estrutura WebGIS da interface
+
+A interface Streamlit foi reorganizada como um WebGIS operacional interno da EA2S, com navegação orientada por fluxo:
+
+1. `Início`: entrada visual do WebGIS, com título institucional, mapa base Folium grande e botão `Iniciar projeto`.
+2. `Compor diagnóstico`: escolha de limites de análise, camadas dinâmicas, socioeconomia e prévia dos comandos.
+3. `Dashboard`: mapa Folium, resumo estatístico, físico-biótico, socioeconômico, hidrografia e dados brutos em uma única área.
+4. `Exportações`: montagem de comandos para processamento, planilhas, gráficos e GeoPackage, sem execução automática.
+5. `Banco de dados geográficos`: cadastro e administração de camadas de análise em `config.camadas_analise`, com leitura de `config.vw_camadas_analise_ativas`.
+6. `Administração`: status técnico, projetos cadastrados, execuções recentes, parâmetros de sessão e pendências operacionais.
+
+A base `EA2S_SIG` concentra sistema, scripts e dados oficiais. Dados de projeto, como área de interesse e pasta SIG, pertencem ao contexto de cada projeto. Resultados finais exportados devem continuar sendo gravados dentro da pasta SIG específica do projeto, em `resultados_mvp\execucao_<id>`.
+
+O mapa operacional usa Folium/Leaflet para visualização rápida em EPSG:4326. O processamento oficial e os cálculos continuam no PostGIS, com SRID operacional adequado. Mapas finais técnicos, simbologia e conferência cartográfica detalhada ainda devem ser revisados no QGIS.
+
+O Plotly passa a ser a biblioteca principal para gráficos interativos no dashboard, usando barras, barras horizontais, comparações por limite de análise e estruturas preparadas para histogramas, box plots, dispersão e pirâmide etária quando houver dados validados. Gráficos de pizza não são usados como padrão.
+
+As informações técnicas, como status do banco, projetos cadastrados, últimas execuções e parâmetros de sessão, ficam em `Administração`, não na página inicial. A aplicação possui a variável `MODO_APP = "interno"`. Autenticação, perfil público somente leitura, controle de acesso e camada pública serão etapas futuras. Nesta versão não há login simulado: o modo interno apenas organiza a evolução esperada da interface.
+
+## Dashboard e Explorador Analítico
+
+O `Dashboard` reúne em uma única área operacional o mapa Folium, cards de resumo, análises físico-bióticas, socioeconômicas, hidrografia, Explorador Analítico e dados brutos. Os filtros de projeto, área de interesse, execução e limite de análise ficam no topo da página.
+
+A aba `Explorador analítico` permite escolher a fonte de dados, o tipo de gráfico e as variáveis dos eixos. As fontes previstas são físico-biótico, socioeconômico, hidrografia e síntese executiva. Os gráficos são interativos com Plotly e usam chaves únicas geradas por `make_key(...)` para evitar `StreamlitDuplicateElementKey`.
+
+O mapa usa Folium/Leaflet, `fit_bounds` quando a área de interesse está disponível e controle de camadas para área de interesse, buffer, microbacias, setores censitários e hidrografia. O processamento oficial e os cálculos continuam no PostGIS; a interface apenas consulta resultados já processados e organiza a visualização.
 ## Mapa na interface Streamlit
 
 A interface possui uma página `Mapa` para visualização cartográfica rápida das camadas principais do projeto e da execução com Folium/Leaflet.
@@ -111,6 +179,63 @@ A página permite:
 - visualizar gráficos interativos simples com Plotly.
 
 A pirâmide etária e a estrutura por sexo dependem de dados específicos disponíveis e validados no banco. Quando essas fontes não estiverem mapeadas com segurança, a interface mostra aviso e não inventa valores.
+
+## Cadastro de camadas de analise
+
+O script `sql/11_config_camadas_analise.sql` cria a primeira versao do cadastro configuravel de camadas do EA2S SIG. A tabela principal e `config.camadas_analise`, complementada por `config.perfis_diagnostico`, `config.perfil_camadas_analise` e pelas views `config.vw_camadas_analise_ativas` e `config.vw_perfis_diagnostico_camadas`.
+
+A interface Streamlit possui a pagina `Camadas de analise`, que le esse cadastro para listar, filtrar e cadastrar/editar metadados das camadas. O formulario grava apenas em `config.camadas_analise`; ele nao importa arquivos espaciais, nao cria tabelas oficiais e nao altera schemas de origem.
+
+Novas bases, como PRODES, CAR, unidades de conservacao, zoneamento ou risco geologico, devem ser importadas previamente para PostGIS em schema apropriado e depois registradas em `config.camadas_analise`. O processamento seletivo real por camada ainda e etapa futura; nesta versao, a selecao dinamica orienta a interface e os parametros de sessao.
+
+Fluxo recomendado:
+
+1. Aplicar `sql/11_config_camadas_analise.sql` no banco somente com autorizacao explicita.
+2. Abrir a interface Streamlit.
+3. Acessar `Camadas de analise`.
+4. Conferir as camadas ativas e seus metadados.
+5. Configurar o diagnostico usando a selecao dinamica de camadas.
+
+## Inventario de bases geograficas
+
+O modulo inicial de inventario de bases geograficas foi preparado para avaliar tecnicamente novas bases antes de qualquer importacao para schemas oficiais. A proposta usa a aba `Inventariar nova base` em `Banco de dados geograficos`, o script base `sql/13_inventario_bases_geograficas.sql`, o complemento `sql/14_inventario_hash_deduplicacao.sql` e o perfilamento de atributos em `sql/15_perfil_atributos_inventario.sql`.
+
+Fluxo previsto:
+
+1. Entrada da base por upload, caminho local/rede ou URL registrada como pendente. Upload aceita GPKG, GeoJSON, JSON e shapefile zipado; caminho local/rede tambem permite `.shp` direto.
+2. Leitura tecnica com GeoPandas/Fiona, sem importar para staging.
+3. Validacao de formato, CRS, geometria, bbox, quantidade de feicoes, campos e tipos geometricos.
+4. Resumo estatistico inicial dos atributos numericos e textuais.
+5. Perfilamento de atributos com inferencia de tipo, revisao manual em tabela editavel e conversoes apenas para visualizacao.
+6. Explorador Grafico com Plotly, permitindo barras, barras horizontais, linhas, dispersao, histograma, box plot, violino, area, heatmap 2D, treemap, sunburst e pizza apenas quando escolhida explicitamente e aplicavel.
+7. Complementacao manual de metadados: grupo, tema, subtema, fonte, orgao produtor, ano e destino sugerido.
+8. Verificacao de duplicidade por hash SHA256 do arquivo original enviado.
+9. Registro do inventario em `importacao.lote_importacao`, `importacao.inventario_arquivo` e, quando houver leitura tabular, `importacao.perfil_atributo`.
+10. Etapa futura: importacao para staging, sem promover diretamente para schemas oficiais.
+11. Etapa futura: promocao controlada para schema oficial somente apos revisao tecnica.
+12. Etapa futura: cadastro automatico em `config.camadas_analise` quando a base for aprovada.
+
+Inventariar e importar sao etapas diferentes. Inventariar significa registrar metadados, qualidade, hash, sugestao de grupo/tema/schema/tabela e uma leitura exploratoria da base. Importar para staging sera uma etapa posterior, controlada e revisavel. Promover para schema oficial sera outra etapa, dependente de validacao tecnica.
+
+O inventario registra tambem bases com pendencias tecnicas, como geometrias invalidas, CRS ausente, ausencia de geometria ou erro de leitura identificado. Essas pendencias bloqueiam staging, promocao oficial e uso no diagnostico, mas nao impedem o registro do inventario quando os metadados minimos e a confirmacao do usuario estiverem preenchidos.
+
+O hash SHA256 e calculado sobre o arquivo original enviado pelo usuario: ZIP, GPKG, GeoJSON ou JSON. Se o mesmo hash ja existir, a interface avisa que o arquivo ja foi inventariado, bloqueia o registro normal e exige confirmacao explicita para registrar duplicado. Registros duplicados de teste nao sao apagados automaticamente; futuramente poderao ser marcados como `arquivado`.
+
+Para nomear bases oficiais, evitar nomes genericos como `area_interesse`, `camada` ou `upload`. Preferir nomes estaveis com tema, fonte e ano, por exemplo `parcelamento_solo_pmf_2023` ou `pgv_pmf_2023`.
+
+O inventario nao altera schemas oficiais como `urbano`, `geologia`, `geomorfologia`, `hidrogeologia`, `pedologia`, `vegetacao`, `hidrografia` ou `topografia`. O registro fica restrito ao schema operacional `importacao`.
+
+## Perfilamento e conversao de atributos
+
+Muitas bases publicas trazem numeros como texto, valores monetarios com `R$`, percentuais com `%`, datas em formatos variados e codigos que parecem numeros mas nao devem ser somados. O modulo de perfilamento detecta tipos sugeridos para cada campo e permite que o usuario confirme o tipo correto antes de qualquer etapa de staging.
+
+O perfil confirmado fica em `importacao.perfil_atributo`. Ele guarda tipo original, tipo sugerido, tipo confirmado, categoria de uso, nulos, valores unicos, exemplos e flags de uso em dashboard, graficos, popup de mapa e exportacao.
+
+As conversoes sao temporarias e usadas apenas em copias de visualizacao para graficos, estatisticas e futuras exportacoes. A base original, os schemas oficiais e as tabelas de resultados permanecem preservados.
+
+O perfilamento de atributos foi ajustado para evitar conversoes indevidas, especialmente numeros e codigos convertidos para data e codigos convertidos para booleano. Campos como `id`, `mslink`, `cd_*`, `cod*`, `setor`, `quadra` e `lote` sao priorizados como codigos.
+
+O Explorador Grafico possui modo recomendado e modo avancado. O modo recomendado filtra colunas compativeis com cada tipo de grafico; o modo avancado permite testar combinacoes mais livres, com validacao antes de plotar. Campos de nome, classe, zona, uso e descricao podem ser usados como rotulo, cor/agrupamento ou hover, mesmo quando nao sao adequados como eixos numericos.
 ## Fluxo geral do MVP
 
 1. Cadastrar projeto.
@@ -138,8 +263,13 @@ Neste projeto, comandos destrutivos no banco dependem de autorizacao explicita. 
 9. `sql/08_tabelas_tecnicas_socioeconomico.sql`: views tecnicas socioeconomicas.
 10. `sql/09_consultas_relatorio_integrado.sql`: views integradas para relatorio tecnico.
 11. `sql/10_hidrografia_ana.sql`: modulo opcional de hidrografia ANA linear.
-12. `sql/99_consultas_conferencia.sql`: consultas finais de leitura.
-
+12. `sql/11_config_camadas_analise.sql`: cadastro configuravel de camadas de analise e perfis de diagnostico.
+13. `sql/12_fluxo_projeto_area_interesse.sql`: suporte ao fluxo funcional de projeto, pasta SIG e area de interesse.
+14. `sql/13_inventario_bases_geograficas.sql`: estrutura operacional para inventario e validacao de novas bases geograficas.
+15. `sql/14_inventario_hash_deduplicacao.sql`: complemento de hash, deduplicacao e view ampliada do inventario.
+16. `sql/15_perfil_atributos_inventario.sql`: perfilamento de atributos de bases inventariadas.
+17. `sql/16_ajuste_view_inventario_criado_em.sql`: ajuste complementar local da view de inventario para expor `lote_criado_em`, `arquivo_criado_em` e `criado_em`.
+18. `sql/99_consultas_conferencia.sql`: consultas finais de leitura.
 ## Como executar o MVP
 
 Depois de preencher o `.env` e confirmar que os scripts e funcoes necessarios ja foram aplicados no banco com autorizacao, o orquestrador principal pode ser chamado assim:
