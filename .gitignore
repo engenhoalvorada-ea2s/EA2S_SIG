@@ -1,4 +1,4 @@
-﻿# Ambiente e variáveis locais
+# Ambiente e variáveis locais
 .env
 .venv/
 
@@ -33,3 +33,6 @@ data/*
 # Sistema operacional
 .DS_Store
 Thumbs.db
+data/importacao/originais/
+data/importacao/staging_temp/
+data/importacao/corrigidos/

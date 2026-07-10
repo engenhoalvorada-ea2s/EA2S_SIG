@@ -50,7 +50,18 @@ from psycopg2 import Binary
 
 # Modulo interno que centraliza a conexao com o banco configurado no .env.
 from db import get_connection
-
+from importacao_staging import (
+    copiar_arquivo_original_para_persistente,
+    gerar_nome_tabela_staging,
+    importar_inventario_para_staging,
+    localizar_arquivo_original,
+)
+from importacao_oficial import (
+    diagnosticar_inventario_para_importacao_oficial,
+    gerar_nome_tabela_oficial,
+    importar_inventario_para_schema_oficial,
+    testar_correcao_inventario,
+)
 
 # Titulo exibido na pagina inicial e no navegador.
 APP_TITLE = "EA2S SIG | WebGIS Socioambiental"
@@ -3994,6 +4005,16 @@ def renderizar_inventario_nova_base() -> None:
                 st.session_state["ultimo_inventario_arquivo_id"] = inventario_id
                 st.session_state["ultimo_lote_id"] = lote_id
                 st.success(f"Inventário registrado. lote_id={lote_id}; inventario_arquivo_id={inventario_id}.")
+                caminho_persistente = copiar_arquivo_original_para_persistente(
+                    inventario.get("caminho_temporario"),
+                    lote_id,
+                    inventario_id,
+                    inventario.get("nome_original_upload") or inventario.get("nome_arquivo"),
+                )
+                if caminho_persistente:
+                    st.success(f"Arquivo original preservado em: {caminho_persistente}")
+                elif inventario.get("formato") != "url":
+                    st.warning("Inventário registrado, mas o arquivo original não foi copiado para data/importacao/originais. Faça a cópia antes de importar para staging.")
                 if perfil_editado is not None and not perfil_editado.empty:
                     ok_perfil, msg_perfil = salvar_perfil_atributos(inventario_id, perfil_editado)
                     if ok_perfil:
@@ -4006,15 +4027,388 @@ def renderizar_inventario_nova_base() -> None:
 
     st.markdown("#### Inventários recentes")
     renderizar_inventarios_recentes(carregar_inventarios_recentes())
+
+def carregar_inventarios_para_staging() -> QueryResult:
+    """Carrega inventarios candidatos a importacao para staging. Apenas leitura."""
+    if not view_existe("importacao.vw_inventario_bases_geograficas"):
+        return QueryResult(False, pd.DataFrame(), "View importacao.vw_inventario_bases_geograficas nao encontrada.")
+    return fetch_dataframe(
+        """
+        SELECT
+            lote_id,
+            inventario_arquivo_id,
+            nome_lote,
+            nome_arquivo,
+            nome_original_upload,
+            caminho_temporario,
+            left(hash_arquivo, 12) AS hash_abreviado,
+            hash_arquivo,
+            layer_name,
+            schema_destino_sugerido,
+            tabela_destino_sugerida,
+            fonte,
+            orgao_produtor,
+            ano_referencia,
+            grupo_sugerido,
+            tema_sugerido,
+            status_validacao,
+            numero_feicoes,
+            numero_campos,
+            srid_detectado,
+            tipo_geometria,
+            geometria_valida,
+            mensagem_validacao,
+            arquivo_criado_em AS criado_em
+        FROM importacao.vw_inventario_bases_geograficas
+        ORDER BY arquivo_criado_em DESC
+        LIMIT 200;
+        """
+    )
+
+
+def carregar_staging_importacoes_recentes() -> QueryResult:
+    """Lista importacoes para staging quando SQL 16 ja tiver sido aplicado."""
+    if not view_existe("importacao.vw_staging_importacoes"):
+        return QueryResult(False, pd.DataFrame(), "Aplique sql/16_importacao_staging.sql para habilitar o controle de staging.")
+    return fetch_dataframe(
+        """
+        SELECT
+            staging_importacao_id,
+            inventario_arquivo_id,
+            lote_id,
+            nome_lote,
+            nome_original,
+            schema_staging,
+            tabela_staging,
+            status_importacao,
+            status_validacao,
+            numero_feicoes_staging,
+            geometrias_invalidas_staging,
+            criado_em
+        FROM importacao.vw_staging_importacoes
+        ORDER BY criado_em DESC
+        LIMIT 50;
+        """
+    )
+
+
+def carregar_importacoes_oficiais_recentes() -> QueryResult:
+    """Lista importacoes oficiais quando SQL 18 ja tiver sido aplicado."""
+    if not view_existe("importacao.vw_importacoes_oficiais"):
+        return QueryResult(False, pd.DataFrame(), "Aplique sql/18_importacao_direta_schema_oficial.sql para habilitar o controle de importacao oficial.")
+    return fetch_dataframe(
+        """
+        SELECT
+            importacao_oficial_id,
+            inventario_arquivo_id,
+            nome_lote,
+            schema_destino,
+            tabela_destino,
+            grupo,
+            tema,
+            status_qualidade,
+            pode_usar_diagnostico,
+            cadastrada_em_config,
+            config_ativo,
+            criado_em
+        FROM importacao.vw_importacoes_oficiais
+        ORDER BY criado_em DESC
+        LIMIT 50;
+        """
+    )
+
+
+def renderizar_importacao_oficial() -> None:
+    """Fluxo principal: inventario validado para tabela oficial nova."""
+    st.markdown("### Importar para base oficial")
+    st.caption(
+        "Fluxo principal simplificado: inventário, validação técnica, correção opcional e importação direta "
+        "para uma nova tabela em schema oficial. Não sobrescreve tabelas existentes."
+    )
+    inventarios = carregar_inventarios_para_staging()
+    if not inventarios.ok:
+        st.warning("Não foi possível carregar inventários registrados.")
+        if inventarios.erro:
+            st.caption(inventarios.erro)
+        return
+    if inventarios.data.empty:
+        st.info("Nenhum inventário encontrado para importação oficial.")
+        return
+
+    dados = inventarios.data.copy()
+    dados["rotulo"] = dados.apply(
+        lambda row: f"#{row.get('inventario_arquivo_id')} | {row.get('nome_original_upload') or row.get('nome_arquivo')} | {row.get('status_validacao')}",
+        axis=1,
+    )
+    rotulo = st.selectbox("Inventário registrado", dados["rotulo"].tolist(), key="oficial_inventario_selecionado")
+    row = dados.loc[dados["rotulo"] == rotulo].iloc[0].to_dict()
+    inv_id = int(row["inventario_arquivo_id"])
+    caminho_original = localizar_arquivo_original(row)
+
+    st.markdown("#### Resumo do inventário")
+    resumo_cols = [
+        col
+        for col in (
+            "inventario_arquivo_id",
+            "lote_id",
+            "nome_lote",
+            "nome_original_upload",
+            "hash_abreviado",
+            "srid_detectado",
+            "tipo_geometria",
+            "numero_feicoes",
+            "status_validacao",
+            "geometria_valida",
+            "grupo_sugerido",
+            "tema_sugerido",
+            "subtema_sugerido",
+            "fonte",
+            "orgao_produtor",
+            "ano_referencia",
+            "schema_destino_sugerido",
+            "tabela_destino_sugerida",
+        )
+        if col in row
+    ]
+    st.dataframe(pd.DataFrame([row])[resumo_cols], use_container_width=True)
+    if caminho_original:
+        st.success(f"Arquivo persistido localizado: {caminho_original}")
+    else:
+        st.error("O arquivo persistido não foi encontrado. Reenvie ou persista novamente a base antes de importar.")
+        return
+
+    schema_default = str(row.get("schema_destino_sugerido") or "").strip()
+    tabela_default = gerar_nome_tabela_oficial(
+        schema_default,
+        row.get("tabela_destino_sugerida"),
+        row.get("fonte"),
+        row.get("ano_referencia"),
+    )
+    st.markdown("#### Destino oficial")
+    c1, c2 = st.columns(2)
+    with c1:
+        schema_destino = st.text_input("Schema destino", value=schema_default, key=make_key("oficial", "schema", inv_id))
+    with c2:
+        tabela_destino = st.text_input("Tabela destino", value=tabela_default, key=make_key("oficial", "tabela", inv_id))
+    st.caption("A importação só cria tabela nova. Se a tabela já existir, o fluxo deve bloquear e sugerir nome _v2.")
+
+    diagnostico_key = make_key("oficial", "diagnostico", inv_id)
+    if st.button("Diagnosticar inventário para importação oficial", key=make_key("oficial", "diagnosticar", inv_id)):
+        try:
+            with get_connection() as conn:
+                st.session_state[diagnostico_key] = diagnosticar_inventario_para_importacao_oficial(inv_id, conn)
+        except Exception as exc:
+            st.session_state[diagnostico_key] = {"status_preliminar": "bloqueado", "bloqueios": [str(exc)], "avisos": []}
+
+    diagnostico = st.session_state.get(diagnostico_key)
+    if diagnostico:
+        st.markdown("#### Diagnóstico técnico")
+        status = diagnostico.get("status_preliminar")
+        if status == "valido":
+            st.success("Status preliminar: válido.")
+        elif status == "pendencias":
+            st.warning("Status preliminar: importável com pendências técnicas.")
+        else:
+            st.error("Status preliminar: bloqueado.")
+        diag_cols = st.columns(4)
+        diag_cols[0].metric("Feições", diagnostico.get("numero_feicoes") or "-")
+        diag_cols[1].metric("SRID", diagnostico.get("srid") or "-")
+        diag_cols[2].metric("Geometrias inválidas", diagnostico.get("geometrias_invalidas") if diagnostico.get("geometrias_invalidas") is not None else "-")
+        diag_cols[3].metric("Geometrias nulas", diagnostico.get("geometrias_nulas") if diagnostico.get("geometrias_nulas") is not None else "-")
+        if diagnostico.get("avisos"):
+            st.warning("Avisos: " + "; ".join(str(item) for item in diagnostico.get("avisos", [])))
+        if diagnostico.get("bloqueios"):
+            st.error("Bloqueios: " + "; ".join(str(item) for item in diagnostico.get("bloqueios", [])))
+        if diagnostico.get("tabela_destino_sugerida_v2"):
+            st.caption(f"Sugestão se a tabela já existir: {diagnostico['tabela_destino_sugerida_v2']}")
+
+        if (diagnostico.get("geometrias_invalidas") or 0) > 0:
+            st.info(
+                "Esta camada possui geometrias inválidas. O sistema pode tentar corrigir automaticamente em memória. "
+                "Se a correção não resolver tudo, ainda será possível importar com pendências para ajuste posterior no QGIS."
+            )
+            if st.button("Testar correção automática de geometrias", key=make_key("oficial", "corrigir", inv_id)):
+                try:
+                    with get_connection() as conn:
+                        st.session_state[make_key("oficial", "correcao", inv_id)] = testar_correcao_inventario(inv_id, conn)
+                except Exception as exc:
+                    st.session_state[make_key("oficial", "correcao", inv_id)] = {"erro": str(exc)}
+
+    correcao = st.session_state.get(make_key("oficial", "correcao", inv_id))
+    if correcao:
+        st.markdown("#### Teste de correção automática")
+        if correcao.get("erro"):
+            st.error(correcao["erro"])
+        else:
+            st.dataframe(pd.DataFrame([{k: v for k, v in correcao.items() if k != "arquivo_persistido"}]), use_container_width=True)
+            if correcao.get("geometrias_invalidas_depois") == 0:
+                st.success("Camada corrigida e apta para importação oficial.")
+            else:
+                st.warning("A correção automática não resolveu todos os problemas. A camada pode ser importada com pendências para correção posterior no QGIS.")
+
+    st.markdown("#### Confirmação de importação")
+    corrigir_geometrias = st.checkbox("Corrigir geometrias em memória antes de importar", key=make_key("oficial", "corrigir_importacao", inv_id))
+    cadastrar_config = st.checkbox("Cadastrar esta camada para uso em Compor diagnóstico", key=make_key("oficial", "cadastrar_config", inv_id))
+    config_ativo = st.checkbox("Cadastrar como ativo no diagnóstico", value=False, disabled=not cadastrar_config, key=make_key("oficial", "config_ativo", inv_id))
+    confirmar_valida = st.checkbox("Confirmo importar como camada válida quando não houver pendências críticas.", key=make_key("oficial", "confirmar_valida", inv_id))
+    confirmar_pendencias = st.checkbox(
+        "Confirmo importar esta camada com pendências técnicas. Entendo que ela poderá precisar de correção posterior no QGIS antes do uso em diagnósticos automáticos.",
+        key=make_key("oficial", "confirmar_pendencias", inv_id),
+    )
+
+    c_validar, c_pend = st.columns(2)
+    with c_validar:
+        importar_valida = st.button("Importar como camada válida", type="primary", key=make_key("oficial", "importar_valida", inv_id))
+    with c_pend:
+        importar_pend = st.button("Importar com pendências", key=make_key("oficial", "importar_pendencias", inv_id))
+
+    if importar_valida or importar_pend:
+        permitir_pendencias = bool(importar_pend and confirmar_pendencias)
+        if importar_valida and not confirmar_valida:
+            st.warning("Confirme a importação como camada válida antes de prosseguir.")
+            return
+        if importar_pend and not confirmar_pendencias:
+            st.warning("Confirme explicitamente a importação com pendências antes de prosseguir.")
+            return
+        try:
+            with get_connection() as conn:
+                resultado = importar_inventario_para_schema_oficial(
+                    inv_id,
+                    schema_destino=schema_destino,
+                    tabela_destino=tabela_destino,
+                    corrigir_geometrias=bool(corrigir_geometrias),
+                    permitir_importar_com_pendencias=permitir_pendencias,
+                    cadastrar_config=bool(cadastrar_config),
+                    config_ativo=bool(config_ativo),
+                    conn=conn,
+                )
+            if resultado.get("ok"):
+                st.success("Importação oficial concluída.")
+            else:
+                st.warning(resultado.get("mensagem") or "Importação oficial não concluída.")
+            st.json(resultado)
+        except Exception as exc:
+            st.error(f"Não foi possível importar para schema oficial: {exc}")
+            st.info("Verifique se sql/18_importacao_direta_schema_oficial.sql foi aplicado e se sqlalchemy, geoalchemy2 e psycopg2 estão disponíveis.")
+
+    st.markdown("#### Importações oficiais recentes")
+    recentes = carregar_importacoes_oficiais_recentes()
+    if recentes.ok:
+        st.dataframe(recentes.data, use_container_width=True)
+    else:
+        st.info(recentes.erro or "Controle de importações oficiais ainda não disponível.")
+
+def renderizar_importacao_staging() -> None:
+    """Interface inicial para importar inventarios registrados para schema staging."""
+    st.markdown("### Staging avançado")
+    st.caption(
+        "Esta etapa cria uma copia operacional no schema staging. "
+        "Nao promove dados para schemas oficiais e nao cadastra camadas automaticamente."
+    )
+    inventarios = carregar_inventarios_para_staging()
+    if not inventarios.ok:
+        st.warning("Não foi possível carregar inventários para staging.")
+        if inventarios.erro:
+            st.caption(inventarios.erro)
+        return
+    if inventarios.data.empty:
+        st.info("Nenhum inventário disponível para importar.")
+        return
+
+    data = inventarios.data.copy()
+    data["rotulo"] = data.apply(
+        lambda row: f"{int(row['inventario_arquivo_id'])} - {row.get('nome_original_upload') or row.get('nome_arquivo')} ({row.get('status_validacao')})",
+        axis=1,
+    )
+    escolha = st.selectbox("Inventário", data["rotulo"].tolist(), key="staging_inventario_escolha")
+    row = data.loc[data["rotulo"] == escolha].iloc[0].to_dict()
+    inv_id = int(row["inventario_arquivo_id"])
+    lote_id = int(row["lote_id"])
+    nome_tabela = gerar_nome_tabela_staging(row.get("schema_destino_sugerido"), row.get("tabela_destino_sugerida"), inv_id)
+    caminho_original = localizar_arquivo_original(row)
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Inventário", inv_id)
+    c2.metric("Lote", lote_id)
+    c3.metric("Feições", formatar_inteiro(row.get("numero_feicoes")))
+    c4.metric("SRID", row.get("srid_detectado") or "-")
+    c5.metric("Status", row.get("status_validacao") or "-")
+    st.markdown("#### Resumo")
+    st.dataframe(
+        pd.DataFrame([row])[[col for col in (
+            "nome_lote", "nome_arquivo", "nome_original_upload", "layer_name", "schema_destino_sugerido",
+            "tabela_destino_sugerida", "status_validacao", "mensagem_validacao"
+        ) if col in row]],
+        use_container_width=True,
+    )
+    if row.get("status_validacao") == "geometria_invalida":
+        st.warning("A camada pode ser importada para staging com geometrias inválidas. Corrija antes de promover para schema oficial.")
+        st.button("Corrigir geometrias em staging", disabled=True, help="Etapa futura: correção controlada no schema staging.")
+    if caminho_original:
+        st.success(f"Arquivo original localizado: {caminho_original}")
+    else:
+        st.error("Arquivo original persistente não localizado. Copie o arquivo para data/importacao/originais antes de importar para staging.")
+
+    st.markdown("#### Destino staging")
+    st.code(f"staging.{nome_tabela}")
+    existentes = carregar_staging_importacoes_recentes()
+    ja_importado = False
+    if existentes.ok and not existentes.data.empty:
+        existentes_inv = existentes.data[existentes.data["inventario_arquivo_id"] == inv_id]
+        ja_importado = not existentes_inv.empty
+        if ja_importado:
+            st.warning("Este inventário já foi importado para staging.")
+            st.dataframe(existentes_inv, use_container_width=True)
+    reimportar = False
+    if ja_importado:
+        reimportar = st.checkbox("Reimportar criando nova tabela staging", key=make_key("staging", "reimportar", inv_id))
+
+    confirmar = st.checkbox(
+        "Confirmo importar apenas para schema staging, sem promover para schema oficial.",
+        key=make_key("staging", "confirmar_importacao", inv_id),
+    )
+    if not confirmar:
+        st.info("Marque a confirmação para habilitar a execução futura da importação.")
+    importar = st.button("Importar para staging", type="primary", key=make_key("staging", "executar", inv_id))
+    if importar:
+        if not confirmar:
+            st.error("Não foi possível importar para staging.")
+            st.warning("Marque a confirmação para importar.")
+            return
+        if caminho_original is None:
+            st.error("Não foi possível importar para staging.")
+            st.warning("Arquivo original persistente não localizado.")
+            return
+        try:
+            with get_connection() as conn:
+                resultado = importar_inventario_para_staging(inv_id, conn, reimportar=bool(reimportar))
+            if resultado.get("ja_importado"):
+                st.warning(resultado.get("mensagem"))
+            elif resultado.get("ok"):
+                st.success(resultado.get("mensagem"))
+                st.json(resultado)
+            else:
+                st.warning(resultado.get("mensagem") or "Importação não concluída.")
+        except Exception as exc:
+            st.error(f"Não foi possível importar para staging: {exc}")
+            st.info("Verifique se sql/16_importacao_staging.sql foi aplicado e se sqlalchemy, geoalchemy2 e psycopg2 estão disponíveis.")
+
+    st.markdown("#### Importações recentes para staging")
+    if existentes.ok:
+        st.dataframe(existentes.data, use_container_width=True)
+    else:
+        st.info(existentes.erro)
+
+
 def pagina_camadas_analise() -> None:
     """Pagina tecnica para consultar, cadastrar e inventariar camadas."""
     st.title("Banco de dados geográficos")
     st.caption(
         "Cadastro operacional e inventário técnico de bases geográficas. "
-        "Esta página não importa dados para schemas oficiais."
+        "Importações oficiais exigem diagnóstico técnico e confirmação explícita."
     )
 
-    tab_camadas, tab_inventario = st.tabs(["Camadas cadastradas", "Inventariar nova base"])
+    tab_camadas, tab_inventario, tab_oficial, tab_staging = st.tabs(["Camadas cadastradas", "Inventariar nova base", "Importar para base oficial", "Staging avançado"])
 
     with tab_camadas:
         result = carregar_camadas_analise_ativas()
@@ -4186,6 +4580,12 @@ def pagina_camadas_analise() -> None:
 
     with tab_inventario:
         renderizar_inventario_nova_base()
+
+    with tab_oficial:
+        renderizar_importacao_oficial()
+
+    with tab_staging:
+        renderizar_importacao_staging()
 
 def pagina_configurar() -> None:
     """Pagina Compor diagnostico organizada em projeto, limites e camadas."""

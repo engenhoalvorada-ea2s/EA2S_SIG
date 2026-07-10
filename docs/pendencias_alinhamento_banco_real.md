@@ -64,6 +64,8 @@ Esses indicadores devem permanecer inativos por enquanto, pois variancia nao dev
 - `sql/10_hidrografia_ana.sql`: criado localmente como proposta do modulo de hidrografia ANA; usa a tabela real `hidrografia."bh6_curso_dagua_ANA_2022"` e os campos reais identificados, mas ainda deve ser revisado e testado em transacao controlada antes de execucao definitiva.
 - `sql/11_config_camadas_analise.sql`: criado localmente como proposta de cadastro configuravel de camadas e perfis de diagnostico; ainda deve ser aplicado e testado manualmente no banco com autorizacao explicita.
 - `sql/15_perfil_atributos_inventario.sql`: recriado localmente como proposta de perfilamento de atributos no schema `importacao`; ainda deve ser aplicado e testado manualmente com autorizacao explicita.
+- `sql/16_importacao_staging.sql`: criado localmente para o fluxo avancado Inventario -> Staging; ainda deve ser aplicado e testado manualmente com autorizacao explicita antes de usar a aba `Staging avancado`.
+- `sql/18_importacao_direta_schema_oficial.sql`: criado localmente para o fluxo principal de importacao direta para schema oficial; ainda deve ser aplicado e testado manualmente com autorizacao explicita antes de usar a aba `Importar para base oficial`.
 
 ## Conferencia final das chaves setoriais
 
@@ -160,7 +162,7 @@ Correcoes locais do modulo 15:
 - Corrigida logica do botao Registrar inventario;
 - Removido bloqueio causado por checkbox dentro de st.form;
 - Validacao do registro passa a ocorrer apos o clique no botao;
-- Geometria invalida continua permitindo inventario, mas bloqueia staging futuro.
+- Geometria invalida continua permitindo inventario; no fluxo principal, deve gerar correcao opcional ou importacao com pendencias quando nao houver bloqueio critico.
 
 Pendencias especificas:
 
@@ -171,9 +173,9 @@ Pendencias especificas:
 5. Testar o inventario com shapefile zipado, incluindo casos com e sem `.prj`.
 6. Testar o inventario com GeoJSON.
 7. Testar o Explorador Grafico com barras, linhas, dispersao, histograma, box plot, violino, area, heatmap, treemap, sunburst e pizza opcional.
-8. Criar etapa posterior de importacao para staging, sem alterar schemas oficiais diretamente.
-9. Criar etapa posterior de promocao controlada para schema oficial apos revisao tecnica.
-10. Criar cadastro automatico em `config.camadas_analise` somente para bases aprovadas.
+8. Aplicar `sql/18_importacao_direta_schema_oficial.sql` no banco somente com autorizacao explicita e testar a importacao direta para schema oficial.
+9. Aplicar `sql/16_importacao_staging.sql` apenas se o recurso avancado de staging for necessario.
+10. Testar cadastro opcional em `config.camadas_analise` somente para bases validas ou explicitamente aprovadas.
 11. Avaliar se registros duplicados de teste devem ser marcados como `arquivado`, sem apagar dados.
 12. Implementar controle de usuarios, login e trilha de auditoria para fluxos de importacao e promocao.
 13. Aplicar `sql/15_perfil_atributos_inventario.sql` no banco somente com autorizacao explicita.
@@ -181,14 +183,57 @@ Pendencias especificas:
 15. Testar campos monetarios, percentuais e datas, incluindo valores em texto como `R$`, `%`, `DD/MM/YYYY`, `MM/YYYY` e `YYYY`.
 16. Testar salvamento do perfil confirmado em `importacao.perfil_atributo` junto com o inventario.
 17. Testar o Explorador Grafico usando o dataframe convertido pelo perfil confirmado.
-18. Usar o perfil confirmado futuramente na importacao para staging.
+18. Usar o perfil confirmado na importacao direta para schema oficial e, quando necessario, no staging avancado.
 19. Usar o perfil confirmado futuramente nas exportacoes.
 20. Testar novamente com altimetria PMF (`alt_cn.shp`), conferindo `id`, `mslink`, `cd_*`, `nm_elevaca`, `cd_classe` e `dt_cadastr`.
 21. Testar com PGV para campos monetarios, codigos numericos longos e graficos com cor/hover/rotulo.
 22. Testar o Explorador Grafico com bases de zoneamento, validando campos de zona, uso, classe e descricao como rotulo/hover.
 23. Testar novamente com altimetria PMF (`alt_cn.shp`) em modo recomendado e avancado, especialmente graficos de dispersao com X/Y diferentes.
-24. Usar o perfil confirmado na futura importacao para staging, sem inferir novamente tipos sensiveis.
-25. Corrigir geometrias invalidas na futura etapa de staging antes de promocao para schema oficial ou uso no diagnostico.
+24. Usar o perfil confirmado na importacao direta para schema oficial, sem inferir novamente tipos sensiveis.
+25. Testar correcao opcional de geometrias invalidas antes da importacao oficial ou registro como pendencia tecnica.
+
+## Fluxo simplificado de importacao oficial
+
+Foi criada localmente a primeira versao do fluxo principal Inventario -> Importacao direta para schema oficial do EA2S SIG:
+
+- `sql/18_importacao_direta_schema_oficial.sql`;
+- `src/importacao_oficial.py`;
+- aba `Importar para base oficial` em `src/app_streamlit.py`;
+- atualizacao do `README.md`;
+- regra em `.gitignore` para `data/importacao/corrigidos/`.
+
+O fluxo principal usa o inventario como etapa obrigatoria de identificacao da base, diagnostico tecnico, perfilamento de atributos, validacao de geometria, tentativa opcional de correcao e definicao de schema/tabela destino. A importacao oficial pode registrar tres situacoes: `valido`, `importado_com_pendencias` e `bloqueado`.
+
+A importacao direta proposta so cria nova tabela no schema oficial indicado. Ela nao apaga, substitui, trunca ou sobrescreve tabelas existentes. O arquivo original permanece preservado em `data/importacao/originais/lote_<lote_id>/inventario_<inventario_arquivo_id>/`. Correcoes opcionais de geometria devem usar memoria ou a pasta `data/importacao/corrigidos/lote_<lote_id>/inventario_<inventario_arquivo_id>/`, sem substituir o arquivo original.
+
+Pendencias especificas da importacao oficial direta:
+
+1. Aplicar `sql/18_importacao_direta_schema_oficial.sql` no banco somente com autorizacao explicita.
+2. Testar a aba `Importar para base oficial` apos aplicar o SQL 18.
+3. Testar `inventario_arquivo_id = 4` (`zona_azul.zip`), esperando importacao como `valido`, `pode_usar_diagnostico = true` e opcao de cadastro ativo em `config.camadas_analise`.
+4. Testar `Zoneamento.zip`, esperando deteccao de geometrias invalidas, oferta de correcao automatica e possibilidade de `importado_com_pendencias` se restarem problemas.
+5. Testar tentativa de importacao para tabela oficial ja existente, esperando bloqueio de sobrescrita e sugestao de nome com sufixo `_v2`.
+6. Verificar o cadastro opcional em `config.camadas_analise`, sem duplicar camada por mesmo schema/tabela/tema.
+7. Verificar se camadas importadas como validas e cadastradas como ativas aparecem em `Compor diagnostico`.
+8. Validar que camadas importadas com pendencias nao sejam usadas automaticamente em diagnosticos.
+
+## Fluxo Inventario -> Staging avancado
+
+O fluxo Inventario -> Staging continua preservado como recurso avancado, mas deixou de ser etapa obrigatoria do fluxo principal:
+
+- `sql/16_importacao_staging.sql`;
+- `src/importacao_staging.py`;
+- aba `Staging avancado` em `src/app_streamlit.py`;
+- regras explicitas em `.gitignore` para `data/importacao/originais/` e `data/importacao/staging_temp/`.
+
+O staging pode ser usado para auditoria, investigacao tecnica ou cargas intermediarias. Ele preserva o arquivo original inventariado, cria nome seguro de tabela no schema `staging`, aplica o perfil de atributos confirmado quando existir, reprojeta para EPSG:31982 quando necessario e registra a importacao em `importacao.staging_importacao`.
+
+Pendencias especificas do staging avancado:
+
+1. Aplicar `sql/16_importacao_staging.sql` no banco somente com autorizacao explicita, se o recurso avancado for usado.
+2. Testar a aba `Staging avancado` apos aplicar o SQL 16.
+3. Conferir a tabela criada em `staging` e o registro em `importacao.staging_importacao`.
+4. Manter staging fora do fluxo principal de importacao oficial, salvo decisao tecnica posterior.
 
 ## Recomendacoes
 

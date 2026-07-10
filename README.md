@@ -74,7 +74,7 @@ Nesta versão, a interface:
 - consulta resultados existentes com `SELECT` e mostra tabelas com `st.dataframe`;
 - lê o cadastro de camadas em `config.vw_camadas_analise_ativas`, quando o script `sql/11_config_camadas_analise.sql` já tiver sido aplicado com autorização.
 
-A interface inicial ainda não executa scripts automaticamente. A execução direta por botão será uma etapa futura, com controles adicionais de segurança. A exportação GPKG depende do `ogr2ogr` e do ambiente QGIS/GDAL configurado no PowerShell. A interface também ainda não cadastra projetos, não importa novas bases espaciais e não substitui os scripts de processamento.
+A interface inicial ainda não executa scripts SQL automaticamente. A importacao oficial de novas bases depende da aplicacao manual e autorizada dos scripts de suporte, especialmente `sql/18_importacao_direta_schema_oficial.sql`, e exige confirmacao explicita do usuario. A exportação GPKG depende do `ogr2ogr` e do ambiente QGIS/GDAL configurado no PowerShell. A interface nao substitui os scripts de processamento nem dispensa revisao tecnica antes de gravacoes definitivas no banco.
 
 
 
@@ -186,7 +186,7 @@ O script `sql/11_config_camadas_analise.sql` cria a primeira versao do cadastro 
 
 A interface Streamlit possui a pagina `Camadas de analise`, que le esse cadastro para listar, filtrar e cadastrar/editar metadados das camadas. O formulario grava apenas em `config.camadas_analise`; ele nao importa arquivos espaciais, nao cria tabelas oficiais e nao altera schemas de origem.
 
-Novas bases, como PRODES, CAR, unidades de conservacao, zoneamento ou risco geologico, devem ser importadas previamente para PostGIS em schema apropriado e depois registradas em `config.camadas_analise`. O processamento seletivo real por camada ainda e etapa futura; nesta versao, a selecao dinamica orienta a interface e os parametros de sessao.
+Novas bases, como PRODES, CAR, unidades de conservacao, zoneamento ou risco geologico, podem seguir pelo fluxo de inventario e importacao oficial controlada antes do registro em `config.camadas_analise`. O processamento seletivo real por camada ainda e etapa futura; nesta versao, a selecao dinamica orienta a interface e os parametros de sessao.
 
 Fluxo recomendado:
 
@@ -198,12 +198,12 @@ Fluxo recomendado:
 
 ## Inventario de bases geograficas
 
-O modulo inicial de inventario de bases geograficas foi preparado para avaliar tecnicamente novas bases antes de qualquer importacao para schemas oficiais. A proposta usa a aba `Inventariar nova base` em `Banco de dados geograficos`, o script base `sql/13_inventario_bases_geograficas.sql`, o complemento `sql/14_inventario_hash_deduplicacao.sql` e o perfilamento de atributos em `sql/15_perfil_atributos_inventario.sql`.
+O modulo de inventario de bases geograficas avalia tecnicamente novas bases antes de qualquer importacao oficial. A proposta usa a aba `Inventariar nova base` em `Banco de dados geograficos`, o script base `sql/13_inventario_bases_geograficas.sql`, o complemento `sql/14_inventario_hash_deduplicacao.sql` e o perfilamento de atributos em `sql/15_perfil_atributos_inventario.sql`.
 
-Fluxo previsto:
+Fluxo previsto do inventario:
 
 1. Entrada da base por upload, caminho local/rede ou URL registrada como pendente. Upload aceita GPKG, GeoJSON, JSON e shapefile zipado; caminho local/rede tambem permite `.shp` direto.
-2. Leitura tecnica com GeoPandas/Fiona, sem importar para staging.
+2. Leitura tecnica com GeoPandas/Fiona, sem alterar schemas oficiais.
 3. Validacao de formato, CRS, geometria, bbox, quantidade de feicoes, campos e tipos geometricos.
 4. Resumo estatistico inicial dos atributos numericos e textuais.
 5. Perfilamento de atributos com inferencia de tipo, revisao manual em tabela editavel e conversoes apenas para visualizacao.
@@ -211,20 +211,80 @@ Fluxo previsto:
 7. Complementacao manual de metadados: grupo, tema, subtema, fonte, orgao produtor, ano e destino sugerido.
 8. Verificacao de duplicidade por hash SHA256 do arquivo original enviado.
 9. Registro do inventario em `importacao.lote_importacao`, `importacao.inventario_arquivo` e, quando houver leitura tabular, `importacao.perfil_atributo`.
-10. Etapa futura: importacao para staging, sem promover diretamente para schemas oficiais.
-11. Etapa futura: promocao controlada para schema oficial somente apos revisao tecnica.
-12. Etapa futura: cadastro automatico em `config.camadas_analise` quando a base for aprovada.
 
-Inventariar e importar sao etapas diferentes. Inventariar significa registrar metadados, qualidade, hash, sugestao de grupo/tema/schema/tabela e uma leitura exploratoria da base. Importar para staging sera uma etapa posterior, controlada e revisavel. Promover para schema oficial sera outra etapa, dependente de validacao tecnica.
-
-O inventario registra tambem bases com pendencias tecnicas, como geometrias invalidas, CRS ausente, ausencia de geometria ou erro de leitura identificado. Essas pendencias bloqueiam staging, promocao oficial e uso no diagnostico, mas nao impedem o registro do inventario quando os metadados minimos e a confirmacao do usuario estiverem preenchidos.
+Inventariar e importar sao etapas diferentes. Inventariar registra metadados, qualidade, hash, sugestao de grupo/tema/schema/tabela, leitura exploratoria e perfilamento de atributos. O inventario tambem registra pendencias tecnicas, como geometrias invalidas, CRS ausente, ausencia de geometria ou erro de leitura identificado.
 
 O hash SHA256 e calculado sobre o arquivo original enviado pelo usuario: ZIP, GPKG, GeoJSON ou JSON. Se o mesmo hash ja existir, a interface avisa que o arquivo ja foi inventariado, bloqueia o registro normal e exige confirmacao explicita para registrar duplicado. Registros duplicados de teste nao sao apagados automaticamente; futuramente poderao ser marcados como `arquivado`.
 
-Para nomear bases oficiais, evitar nomes genericos como `area_interesse`, `camada` ou `upload`. Preferir nomes estaveis com tema, fonte e ano, por exemplo `parcelamento_solo_pmf_2023` ou `pgv_pmf_2023`.
+Para nomear bases oficiais, evitar nomes genericos como `area_interesse`, `camada` ou `upload`. Preferir nomes estaveis com tema, fonte e ano, por exemplo `parcelamento_solo_pmf_2023`, `zona_azul_pmf_2026` ou `pgv_pmf_2023`.
 
 O inventario nao altera schemas oficiais como `urbano`, `geologia`, `geomorfologia`, `hidrogeologia`, `pedologia`, `vegetacao`, `hidrografia` ou `topografia`. O registro fica restrito ao schema operacional `importacao`.
 
+## Fluxo simplificado de importacao oficial
+
+O fluxo principal de importacao de novas bases foi simplificado. Em vez de exigir a passagem obrigatoria por staging, a interface passa a operar assim:
+
+```text
+Inventario -> Validacao tecnica -> Correcao opcional de geometria -> Importacao direta para schema oficial -> Cadastro opcional em config.camadas_analise
+```
+
+A aba principal em `Banco de dados geograficos` e `Importar para base oficial`. Ela seleciona um inventario ja registrado, diagnostica o arquivo persistido, verifica schema/tabela destino, conta feicoes e geometrias invalidas, permite testar correcao automatica em memoria e so entao oferece a importacao.
+
+Situacoes previstas:
+
+- `valido`: arquivo abre, possui SRID, geometrias validas, schema existe, tabela destino nao existe e a camada pode ser usada em diagnostico.
+- `importado_com_pendencias`: arquivo abre e pode ser gravado, mas restam pendencias tecnicas. A camada pode ser importada para correcao posterior no QGIS, sem uso automatico em diagnostico.
+- `bloqueado`: erro critico, como arquivo inexistente, falha de leitura, ausencia de geometria, SRID ausente sem correcao, schema inexistente ou tabela destino ja existente.
+
+O arquivo original inventariado nunca e substituido. Ele permanece em:
+
+```text
+data/importacao/originais/lote_<lote_id>/inventario_<inventario_arquivo_id>/
+```
+
+Quando houver copia corrigida ou material auxiliar de correcao, a pasta prevista e:
+
+```text
+data/importacao/corrigidos/lote_<lote_id>/inventario_<inventario_arquivo_id>/
+```
+
+A implementacao local usa:
+
+- `sql/18_importacao_direta_schema_oficial.sql`: cria a tabela de controle `importacao.importacao_oficial` e a view `importacao.vw_importacoes_oficiais`;
+- `src/importacao_oficial.py`: centraliza diagnostico do inventario, teste de correcao de geometrias, nome seguro de tabela oficial e importacao direta;
+- aba `Importar para base oficial` em `Banco de dados geograficos` na interface Streamlit.
+
+A importacao direta so pode criar nova tabela no schema oficial indicado. Ela nao apaga, substitui, trunca ou sobrescreve tabelas existentes. O cadastro em `config.camadas_analise` e opcional; camadas com pendencias devem ficar inativas ou exigir confirmacao explicita.
+
+Para habilitar o controle de importacoes oficiais no banco, aplicar manualmente e com autorizacao explicita:
+
+```text
+sql/18_importacao_direta_schema_oficial.sql
+```
+
+Testes manuais previstos depois da aplicacao autorizada do SQL 18:
+
+1. Testar `inventario_arquivo_id = 4` (`zona_azul.zip`), esperando importacao como `valido`, `pode_usar_diagnostico = true` e opcao de cadastro ativo em `config.camadas_analise`.
+2. Testar `Zoneamento.zip`, esperando deteccao de geometrias invalidas, tentativa de correcao automatica e, se restarem problemas, possibilidade de importar como `importado_com_pendencias`.
+3. Tentar importar novamente para a mesma tabela oficial, esperando bloqueio de sobrescrita e sugestao de nome com sufixo `_v2`.
+
+## Staging avancado
+
+O fluxo `Inventario -> Staging` continua preservado como recurso avancado, mas nao e mais etapa obrigatoria do fluxo principal. Ele pode ser usado para auditoria, investigacao tecnica ou cargas intermediarias quando isso fizer sentido.
+
+A implementacao local usa:
+
+- `sql/16_importacao_staging.sql`: cria o schema `staging`, a tabela de controle `importacao.staging_importacao` e a view `importacao.vw_staging_importacoes`;
+- `src/importacao_staging.py`: centraliza persistencia do arquivo original, nome seguro de tabela staging, leitura com GeoPandas, aplicacao do perfil confirmado e gravacao com `to_postgis`;
+- aba `Staging avancado` em `Banco de dados geograficos` na interface Streamlit.
+
+As tabelas staging sao sempre criadas no schema `staging`. O fluxo avancado nao altera schemas oficiais, nao promove a camada para base oficial e nao cadastra automaticamente em `config.camadas_analise`.
+
+Para habilitar o controle de staging no banco, aplicar manualmente e com autorizacao explicita:
+
+```text
+sql/16_importacao_staging.sql
+```
 ## Perfilamento e conversao de atributos
 
 Muitas bases publicas trazem numeros como texto, valores monetarios com `R$`, percentuais com `%`, datas em formatos variados e codigos que parecem numeros mas nao devem ser somados. O modulo de perfilamento detecta tipos sugeridos para cada campo e permite que o usuario confirme o tipo correto antes de qualquer etapa de staging.
@@ -269,7 +329,9 @@ Neste projeto, comandos destrutivos no banco dependem de autorizacao explicita. 
 15. `sql/14_inventario_hash_deduplicacao.sql`: complemento de hash, deduplicacao e view ampliada do inventario.
 16. `sql/15_perfil_atributos_inventario.sql`: perfilamento de atributos de bases inventariadas.
 17. `sql/16_ajuste_view_inventario_criado_em.sql`: ajuste complementar local da view de inventario para expor `lote_criado_em`, `arquivo_criado_em` e `criado_em`.
-18. `sql/99_consultas_conferencia.sql`: consultas finais de leitura.
+18. `sql/16_importacao_staging.sql`: estrutura operacional avancada para importacao Inventario -> Staging, com schema `staging`, tabela de controle e view tecnica.
+19. `sql/18_importacao_direta_schema_oficial.sql`: controle operacional da importacao direta para schema oficial, com tabela `importacao.importacao_oficial` e view tecnica.
+20. `sql/99_consultas_conferencia.sql`: consultas finais de leitura.
 ## Como executar o MVP
 
 Depois de preencher o `.env` e confirmar que os scripts e funcoes necessarios ja foram aplicados no banco com autorizacao, o orquestrador principal pode ser chamado assim:
