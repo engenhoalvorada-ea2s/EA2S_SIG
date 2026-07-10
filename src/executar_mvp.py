@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +26,7 @@ SQL_SEQUENCIA_DRY_RUN = (
     "SELECT * FROM resultados.processar_setores_intersectados(%s::bigint, %s::bigint, %s::bigint);",
     "SELECT * FROM resultados.calcular_indicadores_socioeconomicos_mvp(%s::bigint, %s::bigint, %s::bigint);",
     "SELECT * FROM resultados.processar_intersecoes_fisico_bioticas_mvp(%s::bigint, %s::bigint, %s::bigint);",
+    "Opcional com --incluir-hidrografia: SELECT * FROM resultados.processar_hidrografia_ana_mvp(%s, %s, %s);",
     "UPDATE resultados.execucao SET status = 'concluida', mensagem = ..., finalizado_em = now() WHERE id = %s;",
 )
 
@@ -42,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--area-interesse-id", type=int, required=True)
     parser.add_argument("--nome-execucao")
     parser.add_argument("--usuario")
+    parser.add_argument(
+        "--incluir-hidrografia",
+        action="store_true",
+        help="Inclui a etapa opcional de processamento de hidrografia ANA apos as intersecoes fisico-bioticas.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -96,6 +102,7 @@ def criar_execucao(
     area_interesse_id: int,
     nome_execucao: str | None,
     usuario: str,
+    incluir_hidrografia: bool,
 ) -> int:
     nome = nome_execucao or (
         f"Execucao MVP - projeto {projeto_id} area {area_interesse_id}"
@@ -103,6 +110,7 @@ def criar_execucao(
     parametros = {
         "projeto_id": projeto_id,
         "area_interesse_id": area_interesse_id,
+        "incluir_hidrografia": incluir_hidrografia,
         "criado_por": "src/executar_mvp.py",
         "criado_em": datetime.now().isoformat(timespec="seconds"),
     }
@@ -226,6 +234,7 @@ def executar_mvp(args: argparse.Namespace) -> int | None:
                 area_interesse_id,
                 args.nome_execucao,
                 usuario,
+                args.incluir_hidrografia,
             )
             conn.commit()
             print(f"execucao_id criado: {execucao_id}")
@@ -275,6 +284,23 @@ def executar_mvp(args: argparse.Namespace) -> int | None:
                     (execucao_id, projeto_id, area_interesse_id),
                 )
                 conn.commit()
+
+
+                if args.incluir_hidrografia:
+                    executar_etapa(
+                        cur,
+                        "Processando hidrografia ANA",
+                        """
+                        SELECT *
+                        FROM resultados.processar_hidrografia_ana_mvp(
+                            %s,
+                            %s,
+                            %s
+                        );
+                        """,
+                        (execucao_id, projeto_id, area_interesse_id),
+                    )
+                    conn.commit()
 
                 atualizar_status_execucao(
                     cur,

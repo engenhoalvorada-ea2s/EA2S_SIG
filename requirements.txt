@@ -10,3 +10,4 @@ streamlit
 plotly
 folium
 streamlit-folium
+fiona

@@ -124,6 +124,11 @@ def parse_args() -> argparse.Namespace:
         help="Sobrescreve o GeoPackage existente, se houver.",
     )
     parser.add_argument(
+        "--incluir-hidrografia",
+        action="store_true",
+        help="Inclui camadas lineares de hidrografia ANA no GeoPackage.",
+    )
+    parser.add_argument(
         "--incluir-auditoria",
         action="store_true",
         help="Inclui a camada auditoria_fb_intersecoes_todas com todas as intersecoes fisico-bioticas.",
@@ -311,6 +316,63 @@ def montar_colunas_atributos_origem(colunas: list[tuple[str, str]]) -> str:
     if not partes:
         return ""
     return ",\n            " + ",\n            ".join(partes)
+
+
+def geom_multiline_sql(alias: str, geom_col: str, srid: int) -> str:
+    return f"""ST_Multi(
+                ST_CollectionExtract(
+                    ST_MakeValid({alias}.{geom_col}),
+                    2
+                )
+            )::geometry(MultiLineString, {srid})"""
+
+
+def sql_hidrografia(
+    execucao_id: int,
+    projeto_id: int,
+    area_interesse_id: int,
+    srid: int,
+    unidade_analise: str,
+) -> str:
+    views_por_unidade = {
+        "area_interesse": "resultados.vw_hidrografia_area_interesse",
+        "buffer_1000m": "resultados.vw_hidrografia_buffer_1000m",
+        "microbacia": "resultados.vw_hidrografia_microbacias",
+    }
+    view_name = views_por_unidade[unidade_analise]
+    return f"""
+        SELECT
+            h.execucao_id,
+            h.projeto_id,
+            h.area_interesse_id,
+            h.unidade_analise,
+            h.cd_micro,
+            h.nm_micro,
+            h.nm_rio_pri,
+            h.fid_ana,
+            h.wtc_pk,
+            h.idcda,
+            h.cocursodag,
+            h.cocdadesag,
+            h.nunivotcda,
+            h.nuordemcda,
+            h.dedominial,
+            h.dsversao,
+            h.codigo_trecho,
+            h.codigo_curso,
+            h.nome_curso,
+            h.comprimento_m,
+            h.comprimento_km,
+            h.nucompcda_original,
+            h.atributos_origem_json,
+            {geom_multiline_sql("h", "geom", srid)} AS geom
+        FROM {view_name} AS h
+        WHERE h.execucao_id = {execucao_id}
+          AND h.projeto_id = {projeto_id}
+          AND h.area_interesse_id = {area_interesse_id}
+          AND h.geom IS NOT NULL
+          AND NOT ST_IsEmpty(h.geom)
+    """
 
 
 def sql_buffer_1000m(projeto_id: int, area_interesse_id: int, srid: int) -> str:
@@ -616,6 +678,42 @@ def montar_layers(
             ),
         ),
     ]
+
+    if args.incluir_hidrografia:
+        layers.extend(
+            [
+                LayerExport(
+                    "hidrografia_area_interesse",
+                    sql_hidrografia(
+                        args.execucao_id,
+                        args.projeto_id,
+                        args.area_interesse_id,
+                        args.srid,
+                        "area_interesse",
+                    ),
+                ),
+                LayerExport(
+                    "hidrografia_buffer_1000m",
+                    sql_hidrografia(
+                        args.execucao_id,
+                        args.projeto_id,
+                        args.area_interesse_id,
+                        args.srid,
+                        "buffer_1000m",
+                    ),
+                ),
+                LayerExport(
+                    "hidrografia_microbacias",
+                    sql_hidrografia(
+                        args.execucao_id,
+                        args.projeto_id,
+                        args.area_interesse_id,
+                        args.srid,
+                        "microbacia",
+                    ),
+                ),
+            ]
+        )
 
     for unidade_analise, prefixo_layer in UNIDADES_AMBIENTAIS:
         for tema in TEMAS_AMBIENTAIS:
